@@ -92,16 +92,18 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     );
     const tarballOf = new Map(toPack.map((target, index) => [target.label, tarballs[index] as string]));
 
+    // One at a time, not in parallel. Every platform package publishes under the base package's own
+    // name and is told apart by version, so concurrent publishes are concurrent writes to one
+    // packument and the registry rejects the losers with 409 "Failed to save packument".
     if (platformPackages.length > 0) {
-      yield* Effect.log(`Publishing ${platformPackages.length} platform packages in parallel`);
-      yield* Effect.all(
-        platformPackages.map((platformPackage) => effunct(this.publishOne.bind(this))(
+      yield* Effect.log(`Publishing ${platformPackages.length} platform packages`);
+      for (const platformPackage of platformPackages) {
+        yield* this.publishOne(
           platformPackage.platform,
           tarballOf.get(platformPackage.platform) as string,
           platformPackage.distTag,
-        )),
-        { concurrency: platformPackages.length },
-      );
+        );
+      }
     }
 
     yield* Effect.log("Publishing base package");

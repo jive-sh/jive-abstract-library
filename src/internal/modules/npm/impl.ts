@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { Effect, FileSystem, pipe } from "effect";
 import { implementing, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
@@ -52,16 +53,46 @@ export class NpmImpl extends implementing(libraryModules.Npm).uses(libraryModule
     }
   }
 
+  /**
+   * Publishes one tarball, authenticating from `NPM_TOKEN` when the environment supplies it.
+   *
+   * Nothing else writes npm credentials: a runner has no `~/.npmrc`, so without this every publish in
+   * CI failed with `ENEEDAUTH` no matter which secret was set. The token goes into a temporary config
+   * file passed with `--userconfig` rather than onto the command line, where it would be visible to
+   * `ps` and echoed by any shell error. The file is removed whether or not the publish succeeds.
+   */
   *publish({ tarballPath, tag }: PublishInput): EffectGen<void, string> {
-    const result = yield* this.dependencies.OSPlatform.spawnProcess({
-      command: "bunx",
-      args: [NPM_PACKAGE_SPEC, "publish", tarballPath, "--tag", tag],
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    if (result.exitCode !== 0) {
-      return yield* Effect.fail(`npm publish failed for ${tarballPath} with exit code ${result.exitCode}`);
+    const token = yield* Effect.sync(() => process.env["NPM_TOKEN"]);
+    const configPath = token ? yield* this.writeNpmrc(token) : undefined;
+
+    try {
+      const result = yield* this.dependencies.OSPlatform.spawnProcess({
+        command: "bunx",
+        args: [
+          NPM_PACKAGE_SPEC, "publish", tarballPath, "--tag", tag,
+          ...(configPath === undefined ? [] : ["--userconfig", configPath]),
+        ],
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      if (result.exitCode !== 0) {
+        return yield* Effect.fail(`npm publish failed for ${tarballPath} with exit code ${result.exitCode}`);
+      }
+    } finally {
+      if (configPath !== undefined) {
+        yield* Effect.ignore(this.getDependency(FileSystem.FileSystem).remove(configPath, { force: true }));
+      }
     }
+  }
+
+  private *writeNpmrc(token: string): EffectGen<string, string> {
+    const fs = this.getDependency(FileSystem.FileSystem);
+    const path = resolve(tmpdir(), `jive-npmrc-${process.pid}-${Date.now()}`);
+    yield* pipe(
+      fs.writeFileString(path, `//registry.npmjs.org/:_authToken=${token}\n`, { mode: 0o600 }),
+      Effect.mapError((e) => `Cannot write ${path}: ${e.message}`),
+    );
+    return path;
   }
 
   *installTarball({ alias, tarballPath }: InstallTarballInput): EffectGen<void, string> {

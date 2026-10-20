@@ -104,6 +104,9 @@ export const CicdSchema = Schema.Struct({
       description: "If true, a branch's environments deploy one at a time, in the order listed, each waiting for the previous to finish. If false, they all deploy at once.",
     }),
   }),
+  requiredSecrets: Schema.Array(Schema.NonEmptyString).annotate({
+    description: 'Secret names the pipeline exports into the environment for the build and deploy hooks, e.g. ["NPM_TOKEN"]. A secret absent from this list is never passed through, however it is set on the repository.',
+  }),
   runsOnPullRequests: Schema.Boolean.annotate({
     description: "If true, opening or pushing to a pull request runs the build and audit pipeline, plus a preview deploy when deploy.previews is also true.",
   }),

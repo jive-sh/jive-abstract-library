@@ -1,7 +1,7 @@
 {
   "$schema": "./package.schema.json",
   "license": "MIT",
-  "name": "jive-template-library",
+  "name": "@jive-sh/jive-template-library",
   "version": "0.1.0",
   "type": "module",
   "peerDependencies": {

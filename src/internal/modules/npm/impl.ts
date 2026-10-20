@@ -69,7 +69,9 @@ export class NpmImpl extends implementing(libraryModules.Npm).uses(libraryModule
       const result = yield* this.dependencies.OSPlatform.spawnProcess({
         command: "bunx",
         args: [
-          NPM_PACKAGE_SPEC, "publish", tarballPath, "--tag", tag,
+          // Scoped packages default to private, which needs a paid plan: without this every publish
+          // under a scope fails with 402 Payment Required.
+          NPM_PACKAGE_SPEC, "publish", tarballPath, "--tag", tag, "--access", "public",
           ...(configPath === undefined ? [] : ["--userconfig", configPath]),
         ],
         stdout: "inherit",

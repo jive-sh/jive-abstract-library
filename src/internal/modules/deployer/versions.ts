@@ -1,4 +1,4 @@
-import { LATEST_ENVIRONMENT, LOCAL_ENVIRONMENT, PREVIEW_ENVIRONMENT, isEnvironment } from "../../../index";
+import { LATEST_ENVIRONMENT, LOCAL_ENVIRONMENT, PREVIEW_ENVIRONMENT, isEnvironment } from "../../public/manifest";
 
 /**
  * Versions a build once per environment. The build always stamps `local`, so a release recomputes

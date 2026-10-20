@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { JivePackageConfig } from "../../../index";
+import { JivePackageConfig } from "../../public/manifest";
 import { libraryModules } from "../../modules";
 import { makeCicdCommand } from "../../common/command";
 

@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { LOCAL_ENVIRONMENT } from "../../../index";
+import { LOCAL_ENVIRONMENT } from "../../public/manifest";
 import { libraryModules } from "../../modules";
 import { makeCicdCommand } from "../../common/command";
 

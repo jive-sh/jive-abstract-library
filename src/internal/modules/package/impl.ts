@@ -1,6 +1,6 @@
 import { Effect, FileSystem, Schema, SchemaIssue, pipe } from "effect";
 import { implementing, type EffectGen } from "effective-modules";
-import { PackageJsonSchema, type PackageJson } from "../../../index";
+import { PackageJsonSchema, type PackageJson } from "../../public/manifest";
 import { libraryModules } from "../index";
 import type { IPackage } from "./interface";
 

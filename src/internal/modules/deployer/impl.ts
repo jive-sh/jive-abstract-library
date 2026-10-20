@@ -1,8 +1,8 @@
 import { Effect, FileSystem, pipe } from "effect";
 import { effunct, implementing, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
-import { isEnvironment, LOCAL_ENVIRONMENT } from "../../../index";
-import { LOCAL_ALIAS_SUFFIX, OUTDIR } from "../../common/constants";
+import { isEnvironment, LOCAL_ENVIRONMENT } from "../../public/manifest";
+import { INSTALL_SCRIPT, LOCAL_ALIAS_SUFFIX, OUTDIR, REPAIR_ONLY_FLAG } from "../../common/constants";
 import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS } from "../builder/interface";
 import type { DeployInput, IDeployer } from "./interface";
@@ -131,12 +131,27 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     const { outDir, name, stampedBase, platformPackages } = input;
     const local = yield* this.localOnly(platformPackages);
 
-    yield* Effect.log(`Packing ${local.length + 1} packages`);
-    const optionalDependencies: Record<string, string> = {};
+    // The platform package is referenced as a folder, not a tarball: the base tarball is deleted once this
+    // install finishes, and a tarball reference would leave anything that later installs this package
+    // resolving a file that is gone.
+    //
+    // It also has to be *renamed* first. A published platform package keeps the base package's name and is
+    // told apart by its version, with the base aliasing it (`npm:<name>@<version>`) — but `file:` has no
+    // alias form, so a folder still calling itself `<name>` is installed under a key nothing can resolve.
+    // The launcher then fails with "Could not resolve optional platform package <name>-<platform>", which
+    // is true: no package of that name existed. Only the local path renames; publishing must not.
     for (const platformPackage of local) {
-      const tarballPath = yield* this.packOne(outDir, platformPackage.platform, platformPackage.packageDir);
-      optionalDependencies[`${name}-${platformPackage.platform}`] = `file:${tarballPath}`;
+      yield* this.updateManifest(platformPackage.packageDir, {
+        name: `${name}-${platformPackage.platform}`,
+      });
     }
+
+    const optionalDependencies = Object.fromEntries(local.map((platformPackage) => [
+      `${name}-${platformPackage.platform}`,
+      `file:${platformPackage.packageDir}`,
+    ]));
+
+    yield* Effect.log("Packing 1 package");
 
     const baseDir = resolve(outDir, BASE_PACKAGE_DIR);
     yield* this.updateManifest(baseDir, {
@@ -149,9 +164,60 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     yield* this.dependencies.Npm.installTarball({ alias, tarballPath: baseTarball });
     yield* Effect.log(`Installed ${alias}@${stampedBase} locally`);
 
-    const fs = this.getDependency(FileSystem.FileSystem);
-    for (const tarball of [...Object.values(optionalDependencies).map((spec) => spec.slice("file:".length)), baseTarball]) {
-      yield* pipe(fs.remove(tarball, { force: true }), Effect.mapError((e) => `Cannot remove ${tarball}: ${e.message}`));
+    // The platform package has to be installed here too, not only referenced by the base manifest.
+    //
+    // A base package installed from a folder — globally, or as a `file:` dependency — is a symlink into
+    // this checkout, and module resolution starts from the real path. So the launcher looks for its
+    // platform package in *this* package's node_modules and never in the tree it was installed into.
+    // Without this, a local install produces commands that resolve nothing.
+    for (const platformPackage of local) {
+      yield* this.dependencies.Npm.installTarball({
+        alias: `${name}-${platformPackage.platform}`,
+        tarballPath: platformPackage.packageDir,
+      });
+      yield* Effect.log(`Installed ${name}-${platformPackage.platform} locally`);
+    }
+
+    yield* this.runInstallScript(alias);
+
+    yield* pipe(
+      this.getDependency(FileSystem.FileSystem).remove(baseTarball, { force: true }),
+      Effect.mapError((e) => `Cannot remove ${baseTarball}: ${e.message}`),
+    );
+  }
+
+  /**
+   * Runs the installed package's own install script, which npm would have run as a postinstall hook.
+   *
+   * Bun, which is what performs the install here, refuses lifecycle scripts for any package not named in
+   * `trustedDependencies` — reasonably, since a postinstall hook is arbitrary code. That leaves the local
+   * install with launchers that have not been linked to a binary and daemons that have not been
+   * registered, which is the whole point of installing locally. This package's own installer is not
+   * untrusted code, so run it directly.
+   *
+   * Repair only. This install exists so the launcher can resolve its platform package from the building
+   * package's own tree — it is not a copy anyone chose to install, and treating it as one registered a
+   * second daemon for every package that has any: one here, one from wherever the build output was
+   * actually installed. Repair-only also deregisters, so a copy registered under the old behaviour is
+   * cleaned up by the next build.
+   */
+  private *runInstallScript(alias: string): EffectGen<void, string> {
+    const rootDir = yield* this.dependencies.OSPlatform.getCurrentDirectory();
+    const scriptPath = resolve(rootDir, "node_modules", alias, INSTALL_SCRIPT);
+    if (!(yield* pipe(
+      this.getDependency(FileSystem.FileSystem).exists(scriptPath),
+      Effect.mapError((e) => e.message),
+    ))) return;
+
+    const result = yield* this.dependencies.OSPlatform.spawnProcess({
+      command: "node",
+      args: [scriptPath, REPAIR_ONLY_FLAG],
+      cwd: rootDir,
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    if (result.exitCode !== 0) {
+      return yield* Effect.fail(`${INSTALL_SCRIPT} failed with exit code ${result.exitCode}`);
     }
   }
 

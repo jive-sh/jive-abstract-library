@@ -1,4 +1,5 @@
 import { Effect } from "effect";
+import { homedir } from "node:os";
 import { implementing, type EffectGen } from "effective-modules";
 import { libraryModules } from "../index";
 import type {
@@ -30,18 +31,37 @@ export class OSPlatformImpl extends implementing(libraryModules.OSPlatform) impl
     });
   }
 
+  /**
+   * Compiles in a child process rather than through `Bun.build` in this one.
+   *
+   * Each compiled binary embeds the Bun runtime and runs to ~100MB. Building five platforms in a single
+   * process never returns that memory, so the fourth or fifth target dies with
+   * `error.OutOfMemory: Error writing standalone module graph` on any machine without several spare
+   * gigabytes. A child process gives it all back on exit, and the cost is one spawn per platform.
+   */
   *compileExecutable(input: CompileExecutableInput): EffectGen<void, string> {
     const result = yield* Effect.tryPromise({
-      try: () => Bun.build({
-        entrypoints: [input.entrypoint],
-        compile: { outfile: input.outfile, target: input.target as Bun.Build.CompileTarget },
-        root: input.root,
-        sourcemap: "inline",
-      }),
+      try: async () => {
+        const proc = Bun.spawn([
+          "bun", "build",
+          "--compile",
+          "--target", input.target,
+          "--outfile", input.outfile,
+          "--root", input.root,
+          "--sourcemap=inline",
+          input.entrypoint,
+        ], { stdout: "pipe", stderr: "pipe" });
+        const [exitCode, stdout, stderr] = await Promise.all([
+          proc.exited,
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
+        return { exitCode, output: [stdout, stderr].join("\n").trim() };
+      },
       catch: (e) => `Failed to compile ${input.target}: ${e instanceof Error ? e.message : String(e)}`,
     });
-    if (!result.success) {
-      return yield* Effect.fail(`Failed to compile ${input.target}: ${result.logs.map(String).join("\n")}`);
+    if (result.exitCode !== 0) {
+      return yield* Effect.fail(`Failed to compile ${input.target}:\n${result.output}`);
     }
   }
 
@@ -57,5 +77,15 @@ export class OSPlatformImpl extends implementing(libraryModules.OSPlatform) impl
     const value = yield* Effect.sync(() => process.env[name]);
     if (!value) return yield* Effect.fail(`${name} is not set`);
     return value;
+  }
+
+  *getHomeDirectory(): EffectGen<string> {
+    return yield* Effect.sync(() => homedir());
+  }
+
+  *getExecutablePath(): EffectGen<string> {
+    // For a Bun single-file executable this is the binary as invoked, which for a daemon is the hard link
+    // the installer made in the package's bin directory — exactly what its registration recorded.
+    return yield* Effect.sync(() => process.execPath);
   }
 }

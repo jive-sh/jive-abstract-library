@@ -14,6 +14,6 @@ jobs:
     name: Pipeline
     uses: jive-sh/jive/.github/workflows/reusable-pipeline.yml@main
     secrets: inherit
-    # permissions:
-    # id-token: write
-    # contents: read
+    permissions:
+    id-token: write
+    contents: read

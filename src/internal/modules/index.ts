@@ -6,6 +6,7 @@ import type { IJsonSchema } from "./json-schema/interface";
 import type { IBuilder } from "./builder/interface";
 import type { INpm } from "./npm/interface";
 import type { IDeployer } from "./deployer/interface";
+import type { IDaemon } from "./daemon/interface";
 
 export enum LibraryModules {
   OSPlatform = "OSPlatform",
@@ -15,6 +16,7 @@ export enum LibraryModules {
   Builder = "Builder",
   Npm = "Npm",
   Deployer = "Deployer",
+  Daemon = "Daemon",
 }
 
 export const libraryModules = interfaces<LibraryModules, {
@@ -25,4 +27,5 @@ export const libraryModules = interfaces<LibraryModules, {
   Builder: IBuilder;
   Npm: INpm;
   Deployer: IDeployer;
+  Daemon: IDaemon;
 }>(LibraryModules);

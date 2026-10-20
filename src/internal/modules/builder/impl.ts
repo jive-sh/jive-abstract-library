@@ -2,55 +2,51 @@ import { Effect, FileSystem, Option, pipe } from "effect";
 import { implementing, type EffectGen } from "effective-modules";
 import { basename, dirname, relative, resolve } from "node:path";
 import ejs from "ejs";
-import {
-  applyEdits,
-  modify,
-  parse as parseJsonc,
-  printParseErrorCode,
-  type FormattingOptions,
-  type ParseError,
-} from "jsonc-parser";
-import type { PackageJson } from "../../../index";
+import type { PackageJson } from "../../public/manifest";
 import {
   BIN_DIR,
+  DAEMON_HOME_DIR,
+  DAEMON_ID_PREFIX,
+  DAEMON_LOG_SUBDIR,
+  DAEMON_REGISTRY_SUBDIR,
+  DAEMON_SOURCE_DIR,
+  ENTRYPOINT_SOURCE_DIR,
   INSTALL_SCRIPT,
-  PACKAGE_SCHEMA_FILE,
   LICENSE_FILE,
   MULTI_CALL_BINARY,
   OUTDIR,
   README_FILE,
+  REPAIR_ONLY_FLAG,
   WINDOWS_EXECUTABLE_SUFFIX,
   WORKDIR,
 } from "../../common/constants";
+import { editJsonc, insertAfter } from "../../common/jsonc";
+import { COMMAND_LAUNCHER_TEMPLATE } from "../../common/command-launcher";
 import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS, type BuildInput, type BuildResult, type IBuilder, type Platform } from "./interface";
-import { LOCAL_ENVIRONMENT } from "../../../index";
+import { LOCAL_ENVIRONMENT } from "../../public/manifest";
 
 /**
  * Source package layout the builder reads:
  *   src/index.ts        Optional library entrypoint; when present, dist/index.js is emitted and exported.
  *   src/entrypoints/*   Command entrypoints compiled into the multi-call binary.
- *   src/agents/*        Agent entrypoints, compiled into the same binary.
+ *   src/daemons/*      Daemon entrypoints — long-lived background processes — compiled into the same
+ *                       binary. Named daemons, not agents: Jive runs AI agents, and a compiled background
+ *                       process is not one of those.
  *
  * Only src/index.ts and its emit reach the published package. Everything else — internals,
- * entrypoints, agents — exists in the compiled binary alone, so there is no private subpath for
+ * entrypoints, daemons — exists in the compiled binary alone, so there is no private subpath for
  * a consumer to import and no unreachable JS shipped alongside the public entrypoint.
  */
 
-const COMMAND_SOURCE_DIRS = ["src/entrypoints", "src/agents"] as const;
+const COMMAND_SOURCE_DIRS = [ENTRYPOINT_SOURCE_DIR, DAEMON_SOURCE_DIR] as const;
 const SOURCE_ENTRYPOINT = "src/index.ts";
 const EMITTED_ENTRYPOINT = "index.js";
 const SOURCE_SUFFIX = ".ts";
+const TEST_SUFFIXES = [".test.ts", ".test.js", ".test.js.map"] as const;
 const BASE_PACKAGE_ROOT_FILES = [README_FILE, LICENSE_FILE] as const;
-const COMMAND_LAUNCHER_TEMPLATE = "src/internal/common/command-launcher.js.ejs";
 const TSCONFIG_INCLUDE = ["src/**/*.ts"];
 const TSCONFIG_EXCLUDE = [OUTDIR, "node_modules"];
-const JSONC_FORMATTING_OPTIONS = {
-  insertSpaces: true,
-  tabSize: 2,
-  eol: "\n",
-  insertFinalNewline: true,
-} as const satisfies FormattingOptions;
 
 interface CommandSource {
   readonly command: string;
@@ -65,6 +61,8 @@ interface BuildContext {
   readonly packageJson: PackageJson;
   readonly repositoryUrl: Option.Option<string>;
   readonly commandSources: ReadonlyArray<CommandSource>;
+  /** Daemon entries found in src/daemons/, which the manifest must list exactly. */
+  readonly daemons: ReadonlyArray<string>;
   readonly rootFiles: ReadonlyArray<string>;
   readonly hasSourceEntrypoint: boolean;
   readonly platforms: ReadonlyArray<Platform>;
@@ -72,13 +70,10 @@ interface BuildContext {
 }
 
 export class BuilderImpl extends implementing(libraryModules.Builder)
-  .uses(libraryModules.OSPlatform, libraryModules.Git, libraryModules.Package, libraryModules.JsonSchema, FileSystem.FileSystem)
+  .uses(libraryModules.OSPlatform, libraryModules.Git, libraryModules.Package, libraryModules.Daemon, FileSystem.FileSystem)
   implements IBuilder {
 
   *build(input: BuildInput): EffectGen<BuildResult, string> {
-    // Before validating the manifest, so a config that fails validation still gets a current schema
-    // for the editor to explain the failure with.
-    yield* this.writePackageSchema(yield* this.dependencies.OSPlatform.getCurrentDirectory());
     const context = yield* this.resolveContext(input);
     const fs = this.getDependency(FileSystem.FileSystem);
 
@@ -87,6 +82,8 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
       + ` ${context.hasSourceEntrypoint ? "library entrypoint" : "no library entrypoint"},`
       + ` ${context.commandSources.length} command(s)`
       + `${context.commandSources.length > 0 ? ` (${context.commandSources.map((c) => c.command).join(", ")})` : ""},`
+      + ` ${context.daemons.length} daemon(s)`
+      + `${context.daemons.length > 0 ? ` (${context.daemons.join(", ")})` : ""},`
       + ` ${context.platforms.length} platform(s)`,
     );
 
@@ -116,10 +113,12 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     const packageJson = yield* this.dependencies.Package.load();
     const maybeRemote = yield* this.dependencies.Git.getRemoteOrigin();
     const commandSources = yield* this.collectCommandSources(rootDir);
+    const daemons = yield* this.resolveDaemons(rootDir, packageJson);
     const outDir = resolve(rootDir, OUTDIR);
 
     return {
       rootDir,
+      daemons,
       outDir,
       workDir: resolve(outDir, WORKDIR),
       packageJson,
@@ -183,11 +182,12 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
 
     if (context.hasSourceEntrypoint) {
       yield* this.transpileLibrarySource(context, packageDir);
-      yield* this.fsOp(fs.makeDirectory(resolve(packageDir, "src"), { recursive: true }));
-      yield* this.fsOp(fs.copyFile(
-        resolve(context.rootDir, SOURCE_ENTRYPOINT),
-        resolve(packageDir, SOURCE_ENTRYPOINT),
-      ));
+      // The whole source tree ships: the public entrypoint re-exports from internal modules, so
+      // both its emitted JS and its types resolve only if those files are present. The `exports`
+      // map is what keeps them unreachable as public subpaths.
+      yield* this.fsOp(fs.copy(resolve(context.rootDir, "src"), resolve(packageDir, "src")));
+      yield* this.removeTests(resolve(packageDir, "src"));
+      yield* this.removeTests(resolve(packageDir, "dist"));
     }
     if (context.commandSources.length > 0) {
       yield* this.writeCommandLaunchers(context, packageDir);
@@ -247,64 +247,68 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
       return yield* Effect.fail(`tsc failed with exit code ${result.exitCode}:\n${result.stdout.trim()}`);
     }
 
-    yield* this.pruneEmitToEntrypoint(resolve(packageDir, "dist"));
   }
 
   /**
-   * tsc compiles the whole project — which is what typechecks the internal tree as part of a
-   * build — but only the public entrypoint is published, so everything else is dropped again.
+   * Checks the manifest's daemon list against the files, and fails when they disagree.
+   *
+   * The files are what decide that a daemon exists, so the list adds no information — but it has to be
+   * written down anyway, because a file dropped into `src/daemons/` would otherwise acquire a
+   * start-at-login registration on every machine that installs the package without the manifest ever
+   * saying so. Checking it here rather than at install time means the error reaches the author instead of
+   * a user. The dev server makes the editor ask for the same thing while the file is being added; this is
+   * the check that holds in CI, where no dev server is running.
    */
-  private *pruneEmitToEntrypoint(distDir: string): EffectGen<void, string> {
-    const fs = this.getDependency(FileSystem.FileSystem);
-    const keep = new Set([EMITTED_ENTRYPOINT, `${EMITTED_ENTRYPOINT}.map`]);
-    for (const child of yield* this.fsOp(fs.readDirectory(distDir))) {
-      if (keep.has(child)) continue;
-      yield* this.fsOp(fs.remove(resolve(distDir, child), { recursive: true, force: true }));
+  private *resolveDaemons(
+    rootDir: string,
+    packageJson: PackageJson,
+  ): EffectGen<ReadonlyArray<string>, string> {
+    const discovered = yield* this.dependencies.Daemon.discoverNames(rootDir);
+    const declared = packageJson.jive.library.daemons;
+
+    const unlisted = discovered.filter((name) => !declared.includes(name));
+    if (unlisted.length > 0) {
+      return yield* Effect.fail(
+        `jive.library.daemons does not list ${unlisted.map((name) => `"${name}"`).join(", ")},`
+        + ` but ${unlisted.map((name) => `${DAEMON_SOURCE_DIR}/${name}.ts`).join(" and ")} exists.`
+        + ` Every daemon has to be listed: installing the package registers it to start at login.`,
+      );
     }
+
+    const stale = declared.filter((name) => !discovered.includes(name));
+    if (stale.length > 0) {
+      return yield* Effect.fail(
+        `jive.library.daemons lists ${stale.map((name) => `"${name}"`).join(", ")},`
+        + ` but there is no ${stale.map((name) => `${DAEMON_SOURCE_DIR}/${name}.ts`).join(" or ")}.`,
+      );
+    }
+
+    return discovered;
   }
 
-  /**
-   * Renders the template's schema beside the package's own package.json and points `$schema` at it.
-   * A sibling file rather than one under node_modules, because editors watch the workspace but not
-   * node_modules, so a schema there goes stale in the editor after every rebuild.
-   */
-  private *writePackageSchema(rootDir: string): EffectGen<void, string> {
+  /** Tests are part of the repo, not of the package, and a shipped test file is also a test the
+   * local runner would execute twice. */
+  private *removeTests(dir: string): EffectGen<void, string> {
     const fs = this.getDependency(FileSystem.FileSystem);
-    yield* this.fsOp(fs.writeFileString(
-      resolve(rootDir, PACKAGE_SCHEMA_FILE),
-      yield* this.dependencies.JsonSchema.renderPackageJsonSchema(),
-    ));
-
-    const packageJsonPath = resolve(rootDir, "package.json");
-    const originalText = yield* this.fsOp(fs.readFileString(packageJsonPath));
-    const updatedText = applyEdits(originalText, modify(originalText, ["$schema"], `./${PACKAGE_SCHEMA_FILE}`, {
-      formattingOptions: JSONC_FORMATTING_OPTIONS,
-      getInsertionIndex: () => 0,
-    }));
-    yield* assertValidJsonc(packageJsonPath, updatedText);
-    if (updatedText !== originalText) {
-      yield* this.fsOp(fs.writeFileString(packageJsonPath, updatedText));
-      yield* Effect.log(`Pointed $schema at ./${PACKAGE_SCHEMA_FILE}`);
+    for (const child of yield* this.fsOp(fs.readDirectory(dir))) {
+      const path = resolve(dir, child);
+      if ((yield* this.fsOp(fs.stat(path))).type === "Directory") {
+        yield* this.removeTests(path);
+      } else if (TEST_SUFFIXES.some((suffix) => child.endsWith(suffix))) {
+        yield* this.fsOp(fs.remove(path));
+      }
     }
   }
 
   private *ensureTsconfigSourceBoundary(tsconfigPath: string): EffectGen<void, string> {
     const fs = this.getDependency(FileSystem.FileSystem);
     const originalText = yield* this.fsOp(fs.readFileString(tsconfigPath));
-    yield* assertValidJsonc(tsconfigPath, originalText);
-
-    const withInclude = applyEdits(originalText, modify(originalText, ["include"], TSCONFIG_INCLUDE, {
-      formattingOptions: JSONC_FORMATTING_OPTIONS,
-      getInsertionIndex: (properties) => insertAfter(properties, "compilerOptions"),
-    }));
-    const withExclude = applyEdits(withInclude, modify(withInclude, ["exclude"], TSCONFIG_EXCLUDE, {
-      formattingOptions: JSONC_FORMATTING_OPTIONS,
-      getInsertionIndex: (properties) => insertAfter(properties, "include"),
-    }));
-
-    yield* assertValidJsonc(tsconfigPath, withExclude);
-    if (withExclude !== originalText) {
-      yield* this.fsOp(fs.writeFileString(tsconfigPath, withExclude));
+    const updatedText = yield* editJsonc(tsconfigPath, originalText, [
+      { path: ["include"], value: TSCONFIG_INCLUDE, insertAt: (properties) => insertAfter(properties, "compilerOptions") },
+      { path: ["exclude"], value: TSCONFIG_EXCLUDE, insertAt: (properties) => insertAfter(properties, "include") },
+    ]);
+    if (updatedText !== originalText) {
+      yield* this.fsOp(fs.writeFileString(tsconfigPath, updatedText));
     }
   }
 
@@ -313,11 +317,10 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     const binDir = resolve(packageDir, BIN_DIR);
     yield* this.fsOp(fs.makeDirectory(binDir, { recursive: true }));
 
-    const template = yield* this.fsOp(fs.readFileString(resolve(context.rootDir, COMMAND_LAUNCHER_TEMPLATE)));
     for (const { command } of context.commandSources) {
-      yield* this.fsOp(fs.writeFileString(resolve(binDir, command), yield* renderLauncher(context, template, false), { mode: 0o755 }));
+      yield* this.fsOp(fs.writeFileString(resolve(binDir, command), yield* renderLauncher(context, COMMAND_LAUNCHER_TEMPLATE, false), { mode: 0o755 }));
     }
-    yield* this.fsOp(fs.writeFileString(resolve(packageDir, INSTALL_SCRIPT), yield* renderLauncher(context, template, true), { mode: 0o755 }));
+    yield* this.fsOp(fs.writeFileString(resolve(packageDir, INSTALL_SCRIPT), yield* renderLauncher(context, COMMAND_LAUNCHER_TEMPLATE, true), { mode: 0o755 }));
   }
 
   private *writePackageJson(packageDir: string, value: Record<string, unknown>): EffectGen<void, string> {
@@ -352,7 +355,7 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
 
     const files = [
       ...context.rootFiles,
-      ...(hasSourceEntrypoint ? [`dist/${EMITTED_ENTRYPOINT}`, SOURCE_ENTRYPOINT] : []),
+      ...(hasSourceEntrypoint ? ["dist", "src"] : []),
       ...(commandSources.length > 0 ? [BIN_DIR, INSTALL_SCRIPT] : []),
     ];
     generated["files"] = files;
@@ -431,6 +434,13 @@ function* renderLauncher(context: BuildContext, template: string, isInstallScrip
   return yield* Effect.try({
     try: () => ejs.render(template, {
       commandNames: context.commandSources.map(({ command }) => command),
+      packageName: context.packageJson.name,
+      daemons: context.daemons,
+      daemonIdPrefix: DAEMON_ID_PREFIX,
+      daemonHomeDir: DAEMON_HOME_DIR,
+      daemonRegistrySubdir: DAEMON_REGISTRY_SUBDIR,
+      daemonLogSubdir: DAEMON_LOG_SUBDIR,
+      repairOnlyFlag: REPAIR_ONLY_FLAG,
       binDir: BIN_DIR,
       installScript: INSTALL_SCRIPT,
       isInstallScript,
@@ -477,18 +487,3 @@ function toImportPath(path: string): string {
   return normalized.startsWith(".") || normalized.startsWith("/") ? normalized : `./${normalized}`;
 }
 
-function insertAfter(properties: readonly string[], property: string): number {
-  const index = properties.indexOf(property);
-  return index === -1 ? properties.length : index + 1;
-}
-
-function* assertValidJsonc(filePath: string, text: string): EffectGen<void, string> {
-  const errors: ParseError[] = [];
-  parseJsonc(text, errors, { allowTrailingComma: true });
-  if (errors.length === 0) return;
-
-  const details = errors
-    .map((error) => `${printParseErrorCode(error.error)} at offset ${error.offset}`)
-    .join(", ");
-  return yield* Effect.fail(`${filePath} is invalid JSONC: ${details}`);
-}

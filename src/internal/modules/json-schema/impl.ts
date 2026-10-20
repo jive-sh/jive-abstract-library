@@ -1,19 +1,53 @@
-import { Effect, JsonSchema, Schema } from "effect";
+import { Effect, FileSystem, JsonSchema, Schema, pipe } from "effect";
 import { implementing, type EffectGen } from "effective-modules";
-import { GENERATED_PACKAGE_JSON_FIELDS, PackageJsonSchema } from "../../../index";
+import { resolve } from "node:path";
+import { PACKAGE_SCHEMA_FILE } from "../../common/constants";
+import { editJsonc } from "../../common/jsonc";
+import { GENERATED_PACKAGE_JSON_FIELDS } from "../../public/manifest";
 import { libraryModules } from "../index";
 import type { IJsonSchema } from "./interface";
 
-export class JsonSchemaImpl extends implementing(libraryModules.JsonSchema) implements IJsonSchema {
-  *renderPackageJsonSchema(): EffectGen<string> {
+export class JsonSchemaImpl extends implementing(libraryModules.JsonSchema)
+  .uses(FileSystem.FileSystem)
+  implements IJsonSchema {
+
+  *render(schema: Schema.Top): EffectGen<string> {
     return yield* Effect.sync(() => {
-      const document = JsonSchema.toDocumentDraft07(Schema.toJsonSchemaDocument(PackageJsonSchema));
-      const schema = banGeneratedFields(allowAdditionalProperties(withMetaSchema(normalizeArrays({
+      const document = JsonSchema.toDocumentDraft07(Schema.toJsonSchemaDocument(schema));
+      const rendered = banGeneratedFields(allowAdditionalProperties(withMetaSchema(normalizeArrays({
         ...document.schema,
         ...(Object.keys(document.definitions).length === 0 ? {} : { definitions: document.definitions }),
       }))));
-      return `${JSON.stringify(schema, null, 2)}\n`;
+      return `${JSON.stringify(rendered, null, 2)}\n`;
     });
+  }
+
+  *writePackageSchema(rootDir: string, schema: Schema.Top): EffectGen<boolean, string> {
+    const fs = this.getDependency(FileSystem.FileSystem);
+    const schemaPath = resolve(rootDir, PACKAGE_SCHEMA_FILE);
+    const rendered = yield* this.render(schema);
+
+    const previous = (yield* this.fsOp(fs.exists(schemaPath)))
+      ? yield* this.fsOp(fs.readFileString(schemaPath))
+      : "";
+    if (previous !== rendered) {
+      yield* this.fsOp(fs.writeFileString(schemaPath, rendered));
+    }
+
+    const packageJsonPath = resolve(rootDir, "package.json");
+    const originalText = yield* this.fsOp(fs.readFileString(packageJsonPath));
+    const updatedText = yield* editJsonc(packageJsonPath, originalText, [
+      { path: ["$schema"], value: `./${PACKAGE_SCHEMA_FILE}`, insertAt: () => 0 },
+    ]);
+    if (updatedText !== originalText) {
+      yield* this.fsOp(fs.writeFileString(packageJsonPath, updatedText));
+    }
+
+    return previous !== rendered || updatedText !== originalText;
+  }
+
+  private fsOp<A>(effect: Effect.Effect<A, { readonly message: string }>): Effect.Effect<A, string> {
+    return pipe(effect, Effect.mapError((e) => e.message));
   }
 }
 

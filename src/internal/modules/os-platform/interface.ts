@@ -29,6 +29,10 @@ export interface IOSPlatform {
   getCurrentPlatform(): EffectGen<{ readonly os: string; readonly cpu: string }>;
   /** Reads an environment variable, failing when it is unset or empty. */
   requireEnv(name: string): EffectGen<string, string>;
+  /** The current user's home directory, which is where per-user daemon state lives. */
+  getHomeDirectory(): EffectGen<string>;
+  /** This process's own executable, which is how a daemon recognises its own registration. */
+  getExecutablePath(): EffectGen<string>;
 }
 
 export interface CompileExecutableInput {

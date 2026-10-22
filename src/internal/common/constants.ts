@@ -18,13 +18,13 @@ export const DAEMON_HOME_DIR = ".jive";
 export const DAEMON_REGISTRY_SUBDIR = "daemons";
 export const DAEMON_LOG_SUBDIR = "logs";
 /**
- * Tells `install.js` to link the command targets and stop, leaving daemons unregistered.
+ * Tells `install.cjs` to link the command targets and stop, leaving daemons unregistered.
  *
  * An argument rather than an environment variable: this is one caller telling one callee about one
  * invocation, and an ambient variable would be inherited by everything either of them spawns.
  */
 export const REPAIR_ONLY_FLAG = "--repair-only";
-export const INSTALL_SCRIPT = "install.js";
+export const INSTALL_SCRIPT = "install.cjs";
 export const PACKAGE_SCHEMA_FILE = "package.schema.json";
 export const LICENSE_FILE = "LICENSE";
 export const LOCAL_ALIAS_SUFFIX = "-local";

@@ -14,7 +14,7 @@ import { OSPlatformImpl } from "../modules/os-platform/impl";
  * the running command lives says how it was installed — globally or into a project, by bun, pnpm, yarn
  * or npm — and the same manager then installs `<package>@latest` the same way.
  *
- * After installing, the new version's `install.js` is run whenever the manager skips install scripts
+ * After installing, the new version's `install.cjs` is run whenever the manager skips install scripts
  * (bun and pnpm do, for packages not on their allowlist). Skipped, the package's commands stay JS
  * launchers until first run, and a registered daemon — which a service manager starts without `node` on
  * its PATH — fails at its next start and is never re-registered for the new version.
@@ -34,7 +34,7 @@ interface Install {
   readonly scope: "global" | "local";
   /** The project, for a local install: the package manager runs there. */
   readonly cwd?: string;
-  /** The installed package's directory, where the new version's `install.js` will be. */
+  /** The installed package's directory, where the new version's `install.cjs` will be. */
   readonly packageDir?: string;
 }
 

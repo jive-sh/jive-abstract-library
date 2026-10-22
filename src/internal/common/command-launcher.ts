@@ -9,9 +9,12 @@
  * It is still rendered through EJS; only where the source comes from has changed.
  */
 export const COMMAND_LAUNCHER_TEMPLATE = `#!/usr/bin/env node
-import { createRequire } from "node:module";
-import { spawnSync } from "node:child_process";
-import {
+"use strict";
+// CommonJS, not an ES module: a launcher is an extensionless file, and Node 14 and 16 refuse to load an
+// extensionless ES module in a "type": "module" package (ERR_UNKNOWN_FILE_EXTENSION; Node 18.20 accepts it). bin/package.json marks this directory
+// "commonjs", and the install script is install.cjs, so both load the same way on every Node and on Bun.
+const { spawnSync } = require("child_process");
+const {
   chmodSync,
   copyFileSync,
   existsSync,
@@ -19,14 +22,14 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
-} from "node:fs";
-import { createHash } from "node:crypto";
-import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+} = require("fs");
+const { createHash } = require("crypto");
+const { homedir } = require("os");
+const { basename, dirname, join } = require("path");
 
 const PLATFORM_MAP = <%- json(platformMap) %>;
 const PLATFORM_PACKAGES = <%- json(platformPackages) %>;
@@ -43,13 +46,13 @@ const DAEMON_LOG_SUBDIR = <%- json(daemonLogSubdir) %>;
 const REPAIR_ONLY_FLAG = <%- json(repairOnlyFlag) %>;
 const BIN_DIR = <%- json(binDir) %>;
 const INSTALL_SCRIPT = <%- json(installScript) %>;
-// Root install.js repairs command targets; bin launchers repair and then execute.
+// Root install.cjs repairs command targets; bin launchers repair and then execute.
 const IS_INSTALL_SCRIPT = <%- json(isInstallScript) %>;
 const WINDOWS_EXECUTABLE_SUFFIX = <%- json(windowsExecutableSuffix) %>;
 const INSTALLED_JSON = "installed.json";
 
-const require = createRequire(import.meta.url);
-const launcherPath = fileURLToPath(import.meta.url);
+// The real path: reached through a link in a bin directory, the package is wherever the link points.
+const launcherPath = realpathSync(__filename);
 const launcherDir = dirname(launcherPath);
 const packageDir = IS_INSTALL_SCRIPT ? launcherDir : dirname(launcherDir);
 const commandTargetDir = join(packageDir, BIN_DIR);
@@ -196,7 +199,7 @@ function removeInstallScript() {
     rmSync(rootInstallScriptPath, { force: true });
     // TODO: should we also remove the postinstall script line from package.json?
   } catch {
-    // Cleanup is best-effort; failing to remove install.js should not fail package installation.
+    // Cleanup is best-effort; failing to remove install.cjs should not fail package installation.
   }
 }
 

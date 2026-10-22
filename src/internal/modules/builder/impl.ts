@@ -320,6 +320,9 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     for (const { command } of context.commandSources) {
       yield* this.fsOp(fs.writeFileString(resolve(binDir, command), yield* renderLauncher(context, COMMAND_LAUNCHER_TEMPLATE, false), { mode: 0o755 }));
     }
+    // Launchers are extensionless CommonJS files inside a package whose manifest may say "type": "module".
+    // Node takes a file's module type from the nearest package.json, so this one makes bin/ CommonJS.
+    yield* this.fsOp(fs.writeFileString(resolve(binDir, "package.json"), `${JSON.stringify({ type: "commonjs" })}\n`));
     yield* this.fsOp(fs.writeFileString(resolve(packageDir, INSTALL_SCRIPT), yield* renderLauncher(context, COMMAND_LAUNCHER_TEMPLATE, true), { mode: 0o755 }));
   }
 

@@ -95,23 +95,38 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     );
     const tarballOf = new Map(toPack.map((target, index) => [target.label, tarballs[index] as string]));
 
-    // One at a time, not in parallel. Every platform package publishes under the base package's own
-    // name and is told apart by version, so concurrent publishes are concurrent writes to one
-    // packument and the registry rejects the losers with 409 "Failed to save packument".
+    // Platform packages publish under the base package's own name, told apart by version. The first
+    // publish of a new name is a create, and the registry refuses concurrent creates of one name
+    // (403 "too similar to existing package", 409 "Failed to save packument"). So when the package does
+    // not exist yet, one platform goes first and alone; once the registry shows it, the rest go in parallel.
     if (platformPackages.length > 0) {
-      yield* Effect.log(`Publishing ${platformPackages.length} platform packages`);
-      for (const platformPackage of platformPackages) {
-        yield* this.publishOne(
-          platformPackage.platform,
-          tarballOf.get(platformPackage.platform) as string,
-          platformPackage.distTag,
-        );
+      const [first, ...rest] = platformPackages;
+      let parallel = platformPackages;
+      if (first !== undefined && !(yield* this.dependencies.Npm.packageExists(name))) {
+        yield* Effect.log(`${name} does not exist on the registry yet; publishing ${first.platform} first to create it`);
+        yield* this.publishOne(first.platform, tarballOf.get(first.platform) as string, first.distTag);
+        yield* this.waitUntilVisible(name);
+        parallel = rest;
       }
+      yield* Effect.log(`Publishing ${parallel.length} platform packages in parallel`);
+      yield* Effect.all(
+        parallel.map((p) => effunct(this.publishOne.bind(this))(p.platform, tarballOf.get(p.platform) as string, p.distTag)),
+        { concurrency: parallel.length || 1 },
+      );
     }
 
     yield* Effect.log("Publishing base package");
     yield* this.publishOne(BASE_PACKAGE_DIR, tarballOf.get(BASE_PACKAGE_DIR) as string, baseTag);
     yield* Effect.log(`Published ${toPack.length} packages`);
+  }
+
+  /** Polls until the registry reports the package, so the parallel publishes that follow are updates. */
+  private *waitUntilVisible(name: string): EffectGen<void, string> {
+    for (let attempt = 1; attempt <= 20; attempt++) {
+      if (yield* this.dependencies.Npm.packageExists(name)) return;
+      yield* Effect.sleep("3 seconds");
+    }
+    return yield* Effect.fail(`${name} was published but the registry still does not show it after 60 seconds`);
   }
 
   private *packOne(outDir: string, label: string, packageDir: string): EffectGen<string, string> {

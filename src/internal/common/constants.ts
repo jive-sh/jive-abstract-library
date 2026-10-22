@@ -1,6 +1,6 @@
 export const BASE_PACKAGE_TAG = "latest";
 export const BIN_DIR = "bin";
-export const CLI_CMD_NAME = "jive-template";
+export const CLI_CMD_NAME = "jive-library";
 export const DAEMON_SOURCE_DIR = "src/daemons";
 export const ENTRYPOINT_SOURCE_DIR = "src/entrypoints";
 /**

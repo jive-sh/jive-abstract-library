@@ -1,7 +1,7 @@
 {
   "$schema": "./package.schema.json",
   "license": "MIT",
-  "name": "@jive-sh/jive-template-library",
+  "name": "jive-abstract-library",
   "version": "0.1.1",
   "type": "module",
   "peerDependencies": {
@@ -20,13 +20,13 @@
     "typescript": "^5.9.3"
   },
   "scripts": {
-    "jive:cicd:get-config": "bun src/entrypoints/jive-template.ts cicd get-config",
-    "jive:cicd:build": "bun src/entrypoints/jive-template.ts cicd build",
-    "jive:cicd:audit": "jive-template cicd audit",
-    "jive:cicd:deploy:url": "jive-template cicd deploy-url",
-    "jive:cicd:upload-artifacts": "jive-template cicd upload-artifacts",
-    "jive:cicd:deploy": "bun src/entrypoints/jive-template.ts cicd deploy",
-    "dev": "bun src/entrypoints/jive-template.ts dev"
+    "jive:cicd:get-config": "bun src/entrypoints/jive-library.ts cicd get-config",
+    "jive:cicd:build": "bun src/entrypoints/jive-library.ts cicd build",
+    "jive:cicd:audit": "jive-library cicd audit",
+    "jive:cicd:deploy:url": "jive-library cicd deploy-url",
+    "jive:cicd:upload-artifacts": "jive-library cicd upload-artifacts",
+    "jive:cicd:deploy": "bun src/entrypoints/jive-library.ts cicd deploy",
+    "dev": "bun src/entrypoints/jive-library.ts dev"
   },
   "jive": {
     "cicd": {

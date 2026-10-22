@@ -46,7 +46,7 @@ export type PipelineContext = typeof PipelineContextSchema.Type;
 /** Example shown on failure; pipeline-context.test.ts decodes it so the docs cannot drift. */
 export const PIPELINE_CONTEXT_EXAMPLE: PipelineContext = {
   provider: "Github",
-  repository: { owner: "jive-sh", name: "jive-template-library" },
+  repository: { owner: "jive-sh", name: "jive-abstract-library" },
   sourceBranch: "main",
   sourceCommitSha: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
   event: { type: "COMMIT" },

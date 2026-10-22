@@ -48,7 +48,7 @@ const DEFAULT_WATCH_PATHS = ["src", "package.json"] as const;
 const DEBOUNCE = "250 millis";
 
 /**
- * This template's own generator: a package built by `jive-template-library` must list every daemon in
+ * This template's own generator: a package built by `jive-abstract-library` must list every daemon in
  * `src/daemons/` and nothing else. That a daemon exists is readable from the files, but listing it cannot
  * be skipped — a file dropped in that directory would otherwise acquire a start-at-login registration on
  * every user's machine without the manifest ever saying so — so the editor is what asks for it.

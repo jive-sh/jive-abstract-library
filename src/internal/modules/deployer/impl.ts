@@ -102,8 +102,11 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     if (platformPackages.length > 0) {
       const [first, ...rest] = platformPackages;
       let parallel = platformPackages;
-      if (first !== undefined && !(yield* this.dependencies.Npm.packageExists(name))) {
-        yield* Effect.log(`${name} does not exist on the registry yet; publishing ${first.platform} first to create it`);
+      const exists = yield* this.dependencies.Npm.packageExists(name);
+      yield* Effect.log(exists
+        ? `${name} exists on the registry, so every platform publishes in parallel`
+        : `${name} does not exist on the registry yet, so ${first?.platform} publishes alone first to create it`);
+      if (first !== undefined && !exists) {
         yield* this.publishOne(first.platform, tarballOf.get(first.platform) as string, first.distTag);
         yield* this.waitUntilVisible(name);
         parallel = rest;
@@ -123,7 +126,11 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
   /** Polls until the registry reports the package, so the parallel publishes that follow are updates. */
   private *waitUntilVisible(name: string): EffectGen<void, string> {
     for (let attempt = 1; attempt <= 20; attempt++) {
-      if (yield* this.dependencies.Npm.packageExists(name)) return;
+      if (yield* this.dependencies.Npm.packageExists(name)) {
+        yield* Effect.log(`Registry shows ${name} (check ${attempt})`);
+        return;
+      }
+      yield* Effect.log(`Registry does not show ${name} yet (check ${attempt} of 20), retrying in 3 seconds`);
       yield* Effect.sleep("3 seconds");
     }
     return yield* Effect.fail(`${name} was published but the registry still does not show it after 60 seconds`);

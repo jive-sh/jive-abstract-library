@@ -340,8 +340,16 @@ function registerLaunchd(id, name, executable, workingDirectory, logPath) {
   ].join("\\n"));
 
   // Booting out first: bootstrap refuses a label that is already loaded, and a reinstall is the common case.
+  // bootout returns before launchd has finished stopping a daemon that is running, and bootstrap is refused
+  // until it has ("Bootstrap failed: 5"), so a reinstall over a live daemon left it stopped until the next
+  // login. Retry for a few seconds; only the last failure is reported.
   run(unregister, true);
-  const started = run(["launchctl", "bootstrap", domain, plistPath], false);
+  const attempts = 20;
+  let started = false;
+  for (let attempt = 1; attempt <= attempts && !started; attempt++) {
+    if (attempt > 1) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    started = run(["launchctl", "bootstrap", domain, plistPath], attempt < attempts);
+  }
   return { kind: "launchd", unit: label, files: [plistPath], unregister, started };
 }
 

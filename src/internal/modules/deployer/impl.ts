@@ -95,13 +95,30 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     );
     const tarballOf = new Map(toPack.map((target, index) => [target.label, tarballs[index] as string]));
 
+    // A base version already on the registry means this version was released: the author must bump it,
+    // and publishing nothing while reporting success would hide that.
+    if (yield* this.dependencies.Npm.versionExists(name, stampedBase)) {
+      return yield* Effect.fail(`${name}@${stampedBase} is already published; bump the version to release again`);
+    }
+    // Platforms already on the registry are a release that failed part-way — an npm 503 after some
+    // uploads, say. They are skipped, so running the pipeline again finishes the release instead of
+    // failing on a version npm will never accept twice.
+    const pending: PlatformPackage[] = [];
+    for (const platformPackage of input.platformPackages) {
+      if (yield* this.dependencies.Npm.versionExists(name, platformPackage.version)) {
+        yield* Effect.log(`  - ${platformPackage.platform} ${platformPackage.version} is already published, skipping`);
+      } else {
+        pending.push(platformPackage);
+      }
+    }
+
     // Platform packages publish under the base package's own name, told apart by version. The first
     // publish of a new name is a create, and the registry refuses concurrent creates of one name
     // (403 "too similar to existing package", 409 "Failed to save packument"). So when the package does
     // not exist yet, one platform goes first and alone; once the registry shows it, the rest go in parallel.
-    if (platformPackages.length > 0) {
-      const [first, ...rest] = platformPackages;
-      let parallel = platformPackages;
+    if (pending.length > 0) {
+      const [first, ...rest] = pending;
+      let parallel = pending;
       const exists = yield* this.dependencies.Npm.packageExists(name);
       yield* Effect.log(exists
         ? `${name} exists on the registry, so every platform publishes in parallel`

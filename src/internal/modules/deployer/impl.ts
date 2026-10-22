@@ -27,7 +27,10 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     const platformPackages: PlatformPackage[] = [];
     for (const platform of yield* this.builtPlatforms(outDir)) {
       const stamped = platformVersion(version, environment, sourceCommitSha, platform);
-      yield* this.updateManifest(resolve(outDir, platform), { version: stamped });
+      // `name` is reset because the build's local install renames this folder to `<name>-<platform>`,
+      // and the same dist/ is then published by CI: without the reset, the runner's own platform
+      // published as a separate package (`<name>-linux-x64`) instead of a version of `<name>`.
+      yield* this.updateManifest(resolve(outDir, platform), { name, version: stamped });
       platformPackages.push({
         platform,
         packageDir: resolve(outDir, platform),

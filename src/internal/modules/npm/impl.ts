@@ -97,16 +97,6 @@ export class NpmImpl extends implementing(libraryModules.Npm).uses(libraryModule
     return yield* Effect.fail(`npm view failed for ${name}:\n${[result.stdout, result.stderr].join("\n").trim()}`);
   }
 
-  *versionExists(name: string, version: string): EffectGen<boolean, string> {
-    const result = yield* this.dependencies.OSPlatform.spawnProcess({
-      command: "bunx",
-      args: [NPM_PACKAGE_SPEC, "view", `${name}@${version}`, "version", "--json"],
-    });
-    if (result.exitCode === 0) return result.stdout.includes(JSON.stringify(version));
-    if (/\bE404\b/.test(result.stderr) || /\bE404\b/.test(result.stdout)) return false;
-    return yield* Effect.fail(`npm view failed for ${name}@${version}:\n${[result.stdout, result.stderr].join("\n").trim()}`);
-  }
-
   private *writeNpmrc(token: string): EffectGen<string, string> {
     const fs = this.getDependency(FileSystem.FileSystem);
     const path = resolve(tmpdir(), `jive-npmrc-${process.pid}-${Date.now()}`);

@@ -63,48 +63,40 @@ function fail(message) {
   process.exit(1);
 }
 
-function currentPlatformKey() {
-  const platformKey = PLATFORM_MAP[\`\${process.platform}-\${process.arch}\`];
-  if (!platformKey) {
-    fail(\`Unsupported platform: \${process.platform}-\${process.arch}\`);
+function installedPlatformPackage(platformKey) {
+  try {
+    const packageJsonPath = require.resolve(\`\${PLATFORM_PACKAGES[platformKey]}/package.json\`);
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    return {
+      platformKey,
+      binaryPath: join(dirname(packageJsonPath), PLATFORM_BINARIES[platformKey]),
+      version: packageJson.version,
+    };
+  } catch {
+    return undefined;
   }
-  return platformKey;
-}
-
-function currentPlatformPackageName() {
-  const platformKey = currentPlatformKey();
-  const packageName = PLATFORM_PACKAGES[platformKey];
-  if (!packageName) {
-    fail(\`No platform package is configured for \${platformKey}\`);
-  }
-  return packageName;
 }
 
 /**
- * When a Jive library contains any number of CLIs (entrypoints or agents), then the base package
- * will have an optional dependency for each possible architecture, with those platform-specific
- * packages containing a platform build of the CLI.
+ * The base package has one optional dependency per platform, each holding that platform's build of every
+ * command. The package manager installs the one whose "os" and "cpu" match the machine, so the launcher
+ * uses whichever is installed rather than deciding the platform again. Asking again can disagree with the
+ * package manager: on an Apple Silicon Mac, bun (native) installs darwin-arm64, while an Intel build of
+ * Node running under Rosetta reports process.arch "x64".
  * @returns the path to the platform binary and the exact version of the platform package.
  */
 function currentPlatformPackage() {
-  const platformKey = currentPlatformKey();
-  const binaryFile = PLATFORM_BINARIES[platformKey];
-  if (!binaryFile) {
-    fail(\`No platform binary is configured for \${platformKey}\`);
-  }
+  const installed = Object.keys(PLATFORM_PACKAGES).map(installedPlatformPackage).filter(Boolean);
+  if (installed.length === 1) return installed[0];
 
-  const packageName = currentPlatformPackageName();
-  try {
-    const packageJsonPath = require.resolve(\`\${packageName}/package.json\`);
-    const packageDir = dirname(packageJsonPath);
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
-    return {
-      binaryPath: join(packageDir, binaryFile),
-      version: packageJson.version,
-    };
-  } catch (error) {
-    fail(\`Could not resolve optional platform package \${packageName}. Reinstall dependencies for \${process.platform}-\${process.arch}.\`);
-  }
+  const reported = PLATFORM_MAP[\`\${process.platform}-\${process.arch}\`];
+  const matching = installed.find((platformPackage) => platformPackage.platformKey === reported);
+  // More than one is installed only when the package manager was told to (npm's --cpu and --os flags).
+  if (matching) return matching;
+
+  fail(installed.length === 0
+    ? \`None of \${PACKAGE_NAME}'s platform packages is installed (\${Object.values(PLATFORM_PACKAGES).join(", ")}). Reinstall \${PACKAGE_NAME}.\`
+    : \`Several of \${PACKAGE_NAME}'s platform packages are installed (\${installed.map((p) => PLATFORM_PACKAGES[p.platformKey]).join(", ")}) and none matches \${process.platform}-\${process.arch}. Reinstall \${PACKAGE_NAME}.\`);
 }
 
 function commandTargetPath(command) {

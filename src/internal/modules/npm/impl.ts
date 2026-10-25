@@ -1,12 +1,17 @@
 import { tmpdir } from "node:os";
-import { Effect, FileSystem, pipe } from "effect";
-import { implementing, type EffectGen } from "effective-modules";
+import { Effect, FileSystem, Option, Result, Schema, pipe } from "effect";
+import { HttpClient } from "effect/http";
+import { effunct, implementing, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
 import { NPM_PACKAGE_SPEC } from "../../common/constants";
 import { libraryModules } from "../index";
-import type { INpm, InstallTarballInput, PublishInput } from "./interface";
+import { Availability, type INpm, type InstallTarballInput, type PublishInput } from "./interface";
 
-export class NpmImpl extends implementing(libraryModules.Npm).uses(libraryModules.OSPlatform, FileSystem.FileSystem) implements INpm {
+const TARBALL_REQUEST_TIMEOUT = "30 seconds";
+
+export class NpmImpl extends implementing(libraryModules.Npm)
+  .uses(libraryModules.OSPlatform, FileSystem.FileSystem, HttpClient.HttpClient)
+  implements INpm {
   *ensureAvailable(): EffectGen<string, string> {
     const result = yield* this.dependencies.OSPlatform.spawnProcess({
       command: "bunx",
@@ -85,6 +90,34 @@ export class NpmImpl extends implementing(libraryModules.Npm).uses(libraryModule
         yield* Effect.ignore(this.getDependency(FileSystem.FileSystem).remove(configPath, { force: true }));
       }
     }
+  }
+
+  *availability(input: { readonly spec: string; readonly registry: Option.Option<string> }): EffectGen<Availability> {
+    const { spec, registry } = input;
+    const osPlatform = this.dependencies.OSPlatform;
+    const view = yield* Effect.result(effunct(osPlatform.spawnProcess.bind(osPlatform))({
+      command: "bunx",
+      args: [NPM_PACKAGE_SPEC, "view", spec, "dist.tarball", "--json", ...Option.match(registry, { onNone: () => [], onSome: (url) => ["--registry", url] })],
+    }));
+    if (Result.isFailure(view)) return Availability.NotYet({ reason: view.failure });
+    const output = [view.success.stdout, view.success.stderr].join(" ").trim().replace(/\s+/g, " ");
+    if (view.success.exitCode !== 0) {
+      return Availability.NotYet({
+        reason: /\bE404\b/.test(output) ? "the registry does not list it yet" : `npm view exited with code ${view.success.exitCode}: ${output}`,
+      });
+    }
+    const tarballUrl = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.NonEmptyString))(view.success.stdout.trim());
+    if (Option.isNone(tarballUrl)) return Availability.NotYet({ reason: `npm view printed no tarball URL: ${output}` });
+
+    const response = yield* Effect.result(pipe(
+      this.getDependency(HttpClient.HttpClient).head(tarballUrl.value),
+      Effect.timeout(TARBALL_REQUEST_TIMEOUT),
+    ));
+    if (Result.isFailure(response)) return Availability.NotYet({ reason: `requesting ${tarballUrl.value} failed: ${String(response.failure)}` });
+    if (response.success.status < 200 || response.success.status >= 300) {
+      return Availability.NotYet({ reason: `the registry lists it, but ${tarballUrl.value} answers ${response.success.status}` });
+    }
+    return Availability.Downloadable({ tarballUrl: tarballUrl.value });
   }
 
   *packageExists(name: string): EffectGen<boolean, string> {

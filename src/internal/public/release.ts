@@ -1,5 +1,6 @@
 import { Effect, FileSystem, Layer, pipe } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
+import { FetchHttpClient } from "effect/http";
 import { effunct } from "effective-modules";
 import { resolve } from "node:path";
 import { libraryModules } from "../modules";
@@ -17,6 +18,7 @@ const layer = pipe(
   NpmImpl.Layer,
   Layer.provideMerge(OSPlatformImpl.Layer),
   Layer.provideMerge(BunFileSystem.layer),
+  Layer.provideMerge(FetchHttpClient.layer),
 ) satisfies Layer.Layer<any, any, never>;
 
 export interface ReleaseTarget {

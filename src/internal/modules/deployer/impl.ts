@@ -1,4 +1,4 @@
-import { Effect, FileSystem, pipe } from "effect";
+import { Clock, Effect, FileSystem, Option, Schema, pipe } from "effect";
 import { effunct, implementing, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
 import { isEnvironment, LOCAL_ENVIRONMENT } from "../../public/manifest";
@@ -7,6 +7,16 @@ import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS } from "../builder/interface";
 import type { DeployInput, IDeployer } from "./interface";
 import { baseDistTag, baseVersion, baseVersionOf, platformDistTag, platformVersion } from "./versions";
+
+/**
+ * How long a release waits for the registry to serve its platform packages before publishing the base
+ * package, and how often it checks.
+ */
+const PLATFORM_PACKAGES_TIMEOUT_SECONDS = 600;
+const PLATFORM_PACKAGES_CHECK_SECONDS = 10;
+
+/** The registry a package publishes to, when its manifest names one rather than using npm's configured registry. */
+const PublishConfig = Schema.Struct({ publishConfig: Schema.optionalKey(Schema.Struct({ registry: Schema.optionalKey(Schema.String) })) });
 
 interface PlatformPackage {
   readonly platform: string;
@@ -63,7 +73,9 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
   /**
    * A release publishes the platform packages together first: the base package's optional
    * dependencies name their exact versions, so none of them may be missing once the base is
-   * installable. Packing has no such ordering, so all of it happens at once.
+   * installable. npm accepts a publish minutes before it serves it, and serves a small base package
+   * sooner than large platform packages, so the base is published only once every platform package
+   * downloads. Packing has no such ordering, so all of it happens at once.
    */
   private *publishRelease(input: {
     outDir: string; name: string; stampedBase: string; baseTag: string;
@@ -118,9 +130,67 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
       );
     }
 
+    if (platformPackages.length > 0) {
+      yield* this.waitUntilDownloadable({ name, baseDir, platformPackages });
+    }
+
     yield* Effect.log("Publishing base package");
     yield* this.publishOne(BASE_PACKAGE_DIR, tarballOf.get(BASE_PACKAGE_DIR) as string, baseTag);
     yield* Effect.log(`Published ${toPack.length} packages`);
+  }
+
+  /**
+   * Checks every platform package until each downloads from the registry the package publishes to, and
+   * fails, leaving the base package unpublished, if any still does not after the timeout. A base package
+   * published before its platform packages download is installed without one: package managers skip an
+   * optional dependency they cannot fetch, and its commands then have no binary.
+   */
+  private *waitUntilDownloadable(input: {
+    name: string; baseDir: string; platformPackages: ReadonlyArray<PlatformPackage>;
+  }): EffectGen<void, string> {
+    const { name, baseDir, platformPackages } = input;
+    const manifest = yield* pipe(
+      Schema.decodeUnknownEffect(PublishConfig)(yield* this.readManifest(baseDir)),
+      Effect.mapError((e) => `${baseDir}/package.json has an invalid publishConfig: ${e.message}`),
+    );
+    const registry = Option.fromUndefinedOr(manifest.publishConfig?.registry);
+    const npm = this.dependencies.Npm;
+
+    yield* Effect.log(
+      `Waiting for ${Option.getOrElse(registry, () => "npm's registry")} to serve all ${platformPackages.length} platform packages`
+      + ` before publishing the base package (checking every ${PLATFORM_PACKAGES_CHECK_SECONDS} seconds,`
+      + ` for up to ${PLATFORM_PACKAGES_TIMEOUT_SECONDS / 60} minutes)`,
+    );
+    const startedAt = yield* Clock.currentTimeMillis;
+    let pending = platformPackages;
+    while (true) {
+      const checks = yield* Effect.all(
+        pending.map((p) => effunct(npm.availability.bind(npm))({ spec: `${name}@${p.version}`, registry })),
+        { concurrency: pending.length },
+      );
+      const waitedSeconds = Math.round((Number(yield* Clock.currentTimeMillis) - Number(startedAt)) / 1000);
+      const stillPending: Array<{ platformPackage: PlatformPackage; reason: string }> = [];
+      for (const [index, availability] of checks.entries()) {
+        const platformPackage = pending[index] as PlatformPackage;
+        if (availability._tag === "Downloadable") {
+          yield* Effect.log(`  - ${platformPackage.platform} downloads after ${waitedSeconds}s: ${availability.tarballUrl}`);
+        } else {
+          stillPending.push({ platformPackage, reason: availability.reason });
+        }
+      }
+      if (stillPending.length === 0) return;
+
+      const missing = stillPending.map(({ platformPackage, reason }) => `${platformPackage.platform} (${name}@${platformPackage.version}): ${reason}`).join("; ");
+      if (waitedSeconds + PLATFORM_PACKAGES_CHECK_SECONDS > PLATFORM_PACKAGES_TIMEOUT_SECONDS) {
+        return yield* Effect.fail(
+          `After ${PLATFORM_PACKAGES_TIMEOUT_SECONDS / 60} minutes the registry still does not serve every platform package,`
+          + ` so the base package was not published: ${missing}`,
+        );
+      }
+      yield* Effect.log(`  Still waiting after ${waitedSeconds}s for ${missing}`);
+      yield* Effect.sleep(`${PLATFORM_PACKAGES_CHECK_SECONDS} seconds`);
+      pending = stillPending.map(({ platformPackage }) => platformPackage);
+    }
   }
 
   /** Polls until the registry reports the package, so the parallel publishes that follow are updates. */

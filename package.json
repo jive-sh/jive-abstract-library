@@ -2,7 +2,7 @@
   "$schema": "./package.schema.json",
   "license": "MIT",
   "name": "jive-abstract-library",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
   "peerDependencies": {
     "effect": "^4.0.0",
@@ -24,7 +24,7 @@
   "scripts": {
     "jive:cicd:get-config": "bun src/entrypoints/jive-library.ts cicd get-config",
     "jive:cicd:build": "bun src/entrypoints/jive-library.ts cicd build",
-    "jive:cicd:audit": "jive-library cicd audit",
+    "jive:cicd:audit": "tsc --noEmit -p tsconfig.json && bun test",
     "jive:cicd:deploy:url": "jive-library cicd deploy-url",
     "jive:cicd:upload-artifacts": "jive-library cicd upload-artifacts",
     "jive:cicd:deploy": "bun src/entrypoints/jive-library.ts cicd deploy",

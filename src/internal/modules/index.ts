@@ -7,6 +7,7 @@ import type { IBuilder } from "./builder/interface";
 import type { INpm } from "./npm/interface";
 import type { IDeployer } from "./deployer/interface";
 import type { IDaemon } from "./daemon/interface";
+import type { IInstalledPackage } from "./installed-package/interface";
 
 export enum LibraryModules {
   OSPlatform = "OSPlatform",
@@ -17,6 +18,7 @@ export enum LibraryModules {
   Npm = "Npm",
   Deployer = "Deployer",
   Daemon = "Daemon",
+  InstalledPackage = "InstalledPackage",
 }
 
 export const libraryModules = interfaces<LibraryModules, {
@@ -28,4 +30,5 @@ export const libraryModules = interfaces<LibraryModules, {
   Npm: INpm;
   Deployer: IDeployer;
   Daemon: IDaemon;
+  InstalledPackage: IInstalledPackage;
 }>(LibraryModules);

@@ -45,6 +45,7 @@ export {
 export { daemonStatuses, exitWhenUninstalled } from "./internal/public/daemon";
 
 export { upgrade, type UpgradeOptions } from "./internal/public/upgrade";
+export { autoUpgrade, type AutoUpgradeOptions } from "./internal/public/auto-upgrade";
 
 export { DAEMON_ID_PREFIX } from "./internal/common/constants";
 export type { DaemonRegistration, DaemonStatus, DaemonUnitKind } from "./internal/modules/daemon/interface";

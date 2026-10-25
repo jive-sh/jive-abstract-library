@@ -29,7 +29,7 @@ const {
 } = require("fs");
 const { createHash } = require("crypto");
 const { homedir } = require("os");
-const { basename, dirname, join } = require("path");
+const { basename, delimiter, dirname, join } = require("path");
 
 const PLATFORM_MAP = <%- json(platformMap) %>;
 const PLATFORM_PACKAGES = <%- json(platformPackages) %>;
@@ -373,7 +373,10 @@ function registerSystemd(id, name, executable, workingDirectory, logPath) {
   ].join("\\n"));
 
   run(["systemctl", "--user", "daemon-reload"], true);
-  const started = run(["systemctl", "--user", "enable", "--now", unit], false);
+  // Restart rather than \`enable --now\`, which leaves a running daemon on the executable it started from:
+  // after an upgrade that is the old version, held open after its file was replaced.
+  const started = run(["systemctl", "--user", "enable", unit], false)
+    && run(["systemctl", "--user", "restart", unit], false);
   return { kind: "systemd", unit, files: [unitPath], unregister, started };
 }
 
@@ -401,13 +404,14 @@ function registerScheduledTask(id, name, executable, workingDirectory, logPath) 
     "",
   ].join("\\r\\n"));
 
+  // An ONLOGON task waits for the next login, so it is also run now, as launchd and systemd start theirs.
   const started = run([
     "schtasks", "/Create", "/F",
     "/SC", "ONLOGON",
     "/TN", taskName,
     "/TR", \`"\${shimPath}"\`,
     "/RL", "LIMITED",
-  ], false);
+  ], false) && run(["schtasks", "/Run", "/TN", taskName], false);
   return { kind: "scheduled-task", unit: taskName, files: [shimPath], unregister, started };
 }
 
@@ -526,6 +530,7 @@ function registerDaemons() {
       workingDirectory,
       executable,
       registeredAt: new Date().toISOString(),
+      searchPath: [...new Set((process.env.PATH || "").split(delimiter).filter(Boolean))].join(delimiter),
       files: [path],
       unregister: previous && previous.unregister ? previous.unregister : [],
     };

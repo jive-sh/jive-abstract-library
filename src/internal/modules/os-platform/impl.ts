@@ -1,9 +1,11 @@
 import { Effect } from "effect";
+import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { implementing, type EffectGen } from "effective-modules";
 import { libraryModules } from "../index";
 import type {
   CompileExecutableInput,
+  DetachedProcessInput,
   IOSPlatform,
   ProcessResult,
   SpawnProcessInput,
@@ -28,6 +30,27 @@ export class OSPlatformImpl extends implementing(libraryModules.OSPlatform) impl
         return { exitCode, stdout, stderr };
       },
       catch: (e) => `Failed to run ${input.command}: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+
+  *runDetached(input: DetachedProcessInput): EffectGen<number, string> {
+    return yield* Effect.callback<number, string>((resume) => {
+      const child = spawnDetached(input);
+      child.once("error", (e) => resume(Effect.fail(`Failed to run ${input.command}: ${e.message}`)));
+      child.once("exit", (code, signal) => resume(code !== null
+        ? Effect.succeed(code)
+        : Effect.fail(`${input.command} was stopped by ${signal}`)));
+    });
+  }
+
+  *startDetached(input: DetachedProcessInput): EffectGen<void, string> {
+    return yield* Effect.callback<void, string>((resume) => {
+      const child = spawnDetached(input);
+      child.once("error", (e) => resume(Effect.fail(`Failed to start ${input.command}: ${e.message}`)));
+      child.once("spawn", () => {
+        child.unref();
+        resume(Effect.void);
+      });
     });
   }
 
@@ -88,4 +111,9 @@ export class OSPlatformImpl extends implementing(libraryModules.OSPlatform) impl
     // the installer made in the package's bin directory — exactly what its registration recorded.
     return yield* Effect.sync(() => process.execPath);
   }
+}
+
+/** `detached` gives the child its own session (setsid), and with it its own process group. */
+function spawnDetached(input: DetachedProcessInput) {
+  return spawn(input.command, [...input.args], { cwd: input.cwd, env: input.env, detached: true, stdio: "inherit" });
 }

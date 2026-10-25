@@ -5,6 +5,7 @@ import { BuilderImpl } from "../modules/builder/impl";
 import { DaemonImpl } from "../modules/daemon/impl";
 import { DeployerImpl } from "../modules/deployer/impl";
 import { GitImpl } from "../modules/git/impl";
+import { InstalledPackageImpl } from "../modules/installed-package/impl";
 import { JsonSchemaImpl } from "../modules/json-schema/impl";
 import { NpmImpl } from "../modules/npm/impl";
 import { OSPlatformImpl } from "../modules/os-platform/impl";
@@ -18,6 +19,7 @@ export const layerLive = pipe(
   DeployerImpl.Layer,
   Layer.provideMerge(BuilderImpl.Layer),
   Layer.provideMerge(DaemonImpl.Layer),
+  Layer.provideMerge(InstalledPackageImpl.Layer),
   Layer.provideMerge(NpmImpl.Layer),
   Layer.provideMerge(JsonSchemaImpl.Layer),
   Layer.provideMerge(PackageImpl.Layer),

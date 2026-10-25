@@ -35,6 +35,12 @@ export interface DaemonRegistration {
   /** The binary to run. A path inside the package's bin directory, so an upgrade re-links it in place. */
   readonly executable: string;
   readonly registeredAt: string;
+  /**
+   * The `PATH` of whatever registered the daemon — a package manager run from a shell, or a command run
+   * from one — with duplicates dropped. A service manager starts a daemon with a bare PATH, and work the
+   * daemon starts later, such as installing an upgrade, needs the package manager and `node` that shell had.
+   */
+  readonly searchPath: string;
   /** Files the installer created for this registration — the unit file, any shim, this record. */
   readonly files: ReadonlyArray<string>;
   /** Argv that deregisters the daemon with the OS. Empty when the platform needed no such step. */

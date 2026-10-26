@@ -20,7 +20,7 @@ const manifest = {
     "jive:cicd:get-config": "x",
     "jive:cicd:build": "x",
     "jive:cicd:audit": "x",
-    "jive:cicd:deploy:url": "x",
+    "jive:cicd:deploy:plan": "x",
     "jive:cicd:upload-artifacts": "x",
     "jive:cicd:deploy": "x",
   },

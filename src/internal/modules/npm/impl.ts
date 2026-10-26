@@ -9,6 +9,10 @@ import { Availability, type INpm, type InstallTarballInput, type PublishInput } 
 
 const TARBALL_REQUEST_TIMEOUT = "30 seconds";
 
+/** npm asks its configured registry unless told the one a package publishes to. */
+const registryArgs = (registry: Option.Option<string>): ReadonlyArray<string> =>
+  Option.match(registry, { onNone: () => [], onSome: (url) => ["--registry", url] });
+
 export class NpmImpl extends implementing(libraryModules.Npm)
   .uses(libraryModules.OSPlatform, FileSystem.FileSystem, HttpClient.HttpClient)
   implements INpm {
@@ -97,7 +101,7 @@ export class NpmImpl extends implementing(libraryModules.Npm)
     const osPlatform = this.dependencies.OSPlatform;
     const view = yield* Effect.result(effunct(osPlatform.spawnProcess.bind(osPlatform))({
       command: "bunx",
-      args: [NPM_PACKAGE_SPEC, "view", spec, "dist.tarball", "--json", ...Option.match(registry, { onNone: () => [], onSome: (url) => ["--registry", url] })],
+      args: [NPM_PACKAGE_SPEC, "view", spec, "dist.tarball", "--json", ...registryArgs(registry)],
     }));
     if (Result.isFailure(view)) return Availability.NotYet({ reason: view.failure });
     const output = [view.success.stdout, view.success.stderr].join(" ").trim().replace(/\s+/g, " ");
@@ -118,6 +122,22 @@ export class NpmImpl extends implementing(libraryModules.Npm)
       return Availability.NotYet({ reason: `the registry lists it, but ${tarballUrl.value} answers ${response.success.status}` });
     }
     return Availability.Downloadable({ tarballUrl: tarballUrl.value });
+  }
+
+  *versionExists(input: { readonly spec: string; readonly registry: Option.Option<string> }): EffectGen<boolean, string> {
+    const { spec, registry } = input;
+    const result = yield* this.dependencies.OSPlatform.spawnProcess({
+      command: "bunx",
+      args: [NPM_PACKAGE_SPEC, "view", spec, "version", "--json", ...registryArgs(registry)],
+    });
+    const output = [result.stdout, result.stderr].join("\n").trim();
+    if (result.exitCode !== 0) {
+      if (/\bE404\b/.test(output)) return false;
+      return yield* Effect.fail(`npm view failed for ${spec}:\n${output}`);
+    }
+    const version = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.NonEmptyString))(result.stdout.trim());
+    if (Option.isNone(version)) return yield* Effect.fail(`npm view printed no version for ${spec}:\n${output}`);
+    return true;
   }
 
   *packageExists(name: string): EffectGen<boolean, string> {

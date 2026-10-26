@@ -2,10 +2,11 @@ import { Clock, Effect, FileSystem, Option, Schema, pipe } from "effect";
 import { effunct, implementing, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
 import { isEnvironment, LOCAL_ENVIRONMENT } from "../../public/manifest";
-import { INSTALL_SCRIPT, LOCAL_ALIAS_SUFFIX, OUTDIR, REPAIR_ONLY_FLAG } from "../../common/constants";
+import { INSTALL_SCRIPT, LOCAL_ALIAS_SUFFIX, NPM_WEBSITE_URL, OUTDIR, REPAIR_ONLY_FLAG } from "../../common/constants";
+import type { DeployPlan } from "../../public/deploy-plan";
 import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS } from "../builder/interface";
-import type { DeployInput, IDeployer } from "./interface";
+import type { DeployInput, IDeployer, PlanInput } from "./interface";
 import { baseDistTag, baseVersion, baseVersionOf, platformDistTag, platformVersion } from "./versions";
 import { downloadTimesSummary, platformDownloadedLine, publishedBaseLine, publishingLine, type PlatformDownloadTime } from "./download-times";
 
@@ -16,7 +17,6 @@ import { downloadTimesSummary, platformDownloadedLine, publishedBaseLine, publis
 const PLATFORM_PACKAGES_TIMEOUT_SECONDS = 900;
 const PLATFORM_PACKAGES_CHECK_SECONDS = 10;
 
-/** The registry a package publishes to, when its manifest names one rather than using npm's configured registry. */
 const PublishConfig = Schema.Struct({ publishConfig: Schema.optionalKey(Schema.Struct({ registry: Schema.optionalKey(Schema.String) })) });
 
 interface PlatformPackage {
@@ -29,6 +29,20 @@ interface PlatformPackage {
 export class DeployerImpl extends implementing(libraryModules.Deployer)
   .uses(libraryModules.OSPlatform, libraryModules.Npm, FileSystem.FileSystem)
   implements IDeployer {
+
+  *plan({ environment, sourceCommitSha }: PlanInput): EffectGen<DeployPlan, string> {
+    const outDir = resolve(yield* this.dependencies.OSPlatform.getCurrentDirectory(), OUTDIR);
+    const { name, version } = yield* this.readBuiltBase(outDir);
+    const stampedBase = baseVersion(version, environment, sourceCommitSha);
+    const registry = yield* this.readPublishRegistry(resolve(outDir, BASE_PACKAGE_DIR));
+    const registryName = Option.getOrElse(registry, () => "npm's registry");
+    if (yield* this.dependencies.Npm.versionExists({ spec: `${name}@${stampedBase}`, registry })) {
+      yield* Effect.log(`${name}@${stampedBase} is already on ${registryName}, so there is nothing to publish to ${environment}`);
+      return { deploy: false };
+    }
+    yield* Effect.log(`${name}@${stampedBase} is not on ${registryName} yet, so ${environment} publishes it`);
+    return { deploy: true, url: `${NPM_WEBSITE_URL}/package/${name}/v/${stampedBase}` };
+  }
 
   *deploy({ environment, sourceCommitSha, maybeJobSummaryPath }: DeployInput): EffectGen<void, string> {
     const outDir = resolve(yield* this.dependencies.OSPlatform.getCurrentDirectory(), OUTDIR);
@@ -152,11 +166,7 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     maybeJobSummaryPath: Option.Option<string>;
   }): EffectGen<void, string> {
     const { name, version, baseDir, platformPackages, maybeJobSummaryPath } = input;
-    const manifest = yield* pipe(
-      Schema.decodeUnknownEffect(PublishConfig)(yield* this.readManifest(baseDir)),
-      Effect.mapError((e) => `${baseDir}/package.json has an invalid publishConfig: ${e.message}`),
-    );
-    const registry = Option.fromUndefinedOr(manifest.publishConfig?.registry);
+    const registry = yield* this.readPublishRegistry(baseDir);
     const npm = this.dependencies.Npm;
 
     yield* Effect.log(
@@ -204,6 +214,15 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
       yield* Effect.sleep(`${PLATFORM_PACKAGES_CHECK_SECONDS} seconds`);
       pending = stillPending.map(({ platformPackage }) => platformPackage);
     }
+  }
+
+  /** The registry the package in `baseDir` publishes to, when its manifest names one rather than using npm's configured registry. */
+  private *readPublishRegistry(baseDir: string): EffectGen<Option.Option<string>, string> {
+    const manifest = yield* pipe(
+      Schema.decodeUnknownEffect(PublishConfig)(yield* this.readManifest(baseDir)),
+      Effect.mapError((e) => `${baseDir}/package.json has an invalid publishConfig: ${e.message}`),
+    );
+    return Option.fromUndefinedOr(manifest.publishConfig?.registry);
   }
 
   /** Appends markdown to the job summary file, when the job has one. */

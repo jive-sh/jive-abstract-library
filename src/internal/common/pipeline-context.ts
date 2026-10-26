@@ -3,8 +3,8 @@ import type { EffectGen } from "effective-modules";
 import { CLI_CMD_NAME } from "./constants";
 
 /**
- * JIVE_DEPLOY_ENVIRONMENT is a string passed to jive:cicd:deploy and jive:cicd:deploy:url
- * JIVE_PIPELINE_CONTEXT is a JSON passed to jive:cicd:deploy and jive:cicd:deploy:url and jive:cicd:upload-artifacts
+ * JIVE_DEPLOY_ENVIRONMENT is a string passed to jive:cicd:deploy and jive:cicd:deploy:plan
+ * JIVE_PIPELINE_CONTEXT is a JSON passed to jive:cicd:deploy and jive:cicd:deploy:plan and jive:cicd:upload-artifacts
  */
 
 export const DEPLOY_ENVIRONMENT_ENV_VAR_NAME = "JIVE_DEPLOY_ENVIRONMENT";

@@ -3,8 +3,8 @@
  *
  * What lives here: the shape a package.json must have to be built by this abstract, the release helpers a
  * package's own deploy script may need, the dev server, daemon registration, upgrades, and the pieces every
- * other abstract builds its own CLI from: `makeCicdCommandFactory` (the six hooks' input reading and exit
- * handling), `makeJivePackageJsonSchema` (the fields every Jive package has, plus that abstract's own block)
+ * other abstract builds its own CLI from: `makeCicdCommandFactory` (the six hooks' input reading, output printing
+ * and exit handling), `makeJivePackageJsonSchema` (the fields every Jive package has, plus that abstract's own block)
  * and `loadPackageJson`. An abstract imports these rather than restating them.
  */
 
@@ -37,6 +37,8 @@ export {
 } from "./internal/public/manifest";
 
 export { loadPackageJson } from "./internal/public/package-json";
+
+export { DeployPlan } from "./internal/public/deploy-plan";
 
 export { makeCicdCommandFactory, type CicdCommandFactory } from "./internal/common/command";
 export type { PipelineContext } from "./internal/common/pipeline-context";

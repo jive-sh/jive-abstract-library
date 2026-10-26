@@ -21,7 +21,12 @@ const PLATFORMS = ["darwin-arm64", "linux-x64"] as const;
  * each availability check in `events`. `downloadableAfter` says how many checks of each platform package
  * find it not yet downloadable; a platform missing from it never downloads.
  */
-function release(input: { downloadableAfter: Partial<Record<(typeof PLATFORMS)[number], number>>; publishConfig?: object }) {
+function release(input: {
+  downloadableAfter: Partial<Record<(typeof PLATFORMS)[number], number>>;
+  publishConfig?: object;
+  /** Specs (`<name>@<version>`) the fake registry already lists. */
+  published?: ReadonlyArray<string>;
+}) {
   const dir = mkdtempSync(join(tmpdir(), "deployer-test-"));
   const write = (folder: string, manifest: object) => {
     mkdirSync(join(dir, "dist", folder), { recursive: true });
@@ -38,6 +43,11 @@ function release(input: { downloadableAfter: Partial<Record<(typeof PLATFORMS)[n
     *pack(packageDir: string) { return `${packageDir}.tgz`; },
     *publish({ tarballPath }: { tarballPath: string }) { events.push(`publish ${basename(tarballPath, ".tgz")}`); },
     *packageExists() { return true; },
+    *versionExists({ spec, registry }: { spec: string; registry: Option.Option<string> }) {
+      registries.push(registry);
+      events.push(`versionExists ${spec}`);
+      return (input.published ?? []).includes(spec);
+    },
     *availability({ spec, registry }: { spec: string; registry: Option.Option<string> }) {
       registries.push(registry);
       const count = (checks.get(spec) ?? 0) + 1;
@@ -152,5 +162,41 @@ describe("publishing a release", () => {
     expect(Result.isSuccess(result)).toBe(true);
     expect(fixture.registries).toEqual([Option.some("https://registry.example/"), Option.some("https://registry.example/")]);
     expect(logs).toContain("Waiting for https://registry.example/ to serve all 2 platform packages before publishing the base package (checking every 10 seconds, for up to 15 minutes)");
+  });
+});
+
+describe("planning a release", () => {
+  const plan = (fixture: ReturnType<typeof release>, environment: string) => Effect.runPromise(pipe(
+    effunct(function* () {
+      return yield* (yield* libraryModules.Deployer).plan({ environment, sourceCommitSha: "abcdef1234" });
+    })(),
+    Effect.provide(fixture.layer),
+    Effect.provide(Logger.layer([])),
+  ));
+
+  test("plans nothing when the registry already lists the base package at this environment's version", async () => {
+    const fixture = release({ downloadableAfter: {}, published: [`${PKG}@1.0.0`] });
+    expect(await plan(fixture, "latest")).toEqual({ deploy: false });
+    expect(fixture.events).toEqual([`versionExists ${PKG}@1.0.0`]);
+  });
+
+  test("plans a publish, linking the version's npm page, when the base package is not listed", async () => {
+    const fixture = release({ downloadableAfter: {}, published: [`${PKG}@1.0.0-latest-linux-x64`] });
+    expect(await plan(fixture, "latest")).toEqual({ deploy: true, url: `https://www.npmjs.com/package/${PKG}/v/1.0.0` });
+  });
+
+  test("checks the version the environment stamps", async () => {
+    const fixture = release({ downloadableAfter: {}, published: [`${PKG}@1.0.0`] });
+    expect(await plan(fixture, "preview")).toEqual({ deploy: true, url: `https://www.npmjs.com/package/${PKG}/v/1.0.0-preview-abcdef12` });
+    expect(fixture.events).toEqual([`versionExists ${PKG}@1.0.0-preview-abcdef12`]);
+  });
+
+  test("asks the registry the package publishes to, or npm's configured one", async () => {
+    const custom = release({ downloadableAfter: {}, publishConfig: { registry: "https://registry.example/" } });
+    await plan(custom, "latest");
+    expect(custom.registries).toEqual([Option.some("https://registry.example/")]);
+    const configured = release({ downloadableAfter: {} });
+    await plan(configured, "latest");
+    expect(configured.registries).toEqual([Option.none()]);
   });
 });

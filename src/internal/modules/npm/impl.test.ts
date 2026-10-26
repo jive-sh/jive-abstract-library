@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { Effect, Layer, Option, pipe } from "effect";
+import { Effect, Layer, Option, Result, pipe } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { FetchHttpClient } from "effect/http";
 import { effunct } from "effective-modules";
@@ -60,5 +60,53 @@ describe("availability", () => {
     expect((await availability({ exitCode: 1, stdout: "", registry: "https://registry.example/" })).argv.slice(-2))
       .toEqual(["--registry", "https://registry.example/"]);
     expect((await availability({ exitCode: 1, stdout: "" })).argv).not.toContain("--registry");
+  });
+});
+
+/** Asks whether `SPEC` is published, with `npm view` answering `exitCode`, `stdout` and `stderr`; returns the outcome and npm's arguments. */
+async function versionExists(input: { exitCode: number; stdout: string; stderr: string; registry?: string }) {
+  const argv: string[] = [];
+  const osPlatform = OSPlatformImpl.mockLayer({
+    *spawnProcess(spawn: SpawnProcessInput) {
+      argv.push(spawn.command, ...(spawn.args ?? []));
+      return { exitCode: input.exitCode, stdout: input.stdout, stderr: input.stderr };
+    },
+  });
+  const result = await Effect.runPromise(pipe(
+    effunct(function* () {
+      return yield* (yield* libraryModules.Npm).versionExists({ spec: SPEC, registry: Option.fromUndefinedOr(input.registry) });
+    })(),
+    Effect.provide(pipe(NpmImpl.Layer, Layer.provideMerge(osPlatform), Layer.provideMerge(BunFileSystem.layer), Layer.provideMerge(FetchHttpClient.layer))),
+    Effect.result,
+  ));
+  return { result, argv };
+}
+
+describe("versionExists", () => {
+  test("is true when the registry lists the version", async () => {
+    const { result } = await versionExists({ exitCode: 0, stdout: '"1.0.0-latest-linux-x64"\n', stderr: "" });
+    expect(result).toEqual(Result.succeed(true));
+  });
+
+  test("is false when the registry has the package but not the version, or no package at all", async () => {
+    for (const stderr of ["npm error code E404\nnpm error 404 No match found for version 1.0.0", "npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/@test%2fdemo"]) {
+      expect((await versionExists({ exitCode: 1, stdout: "", stderr })).result).toEqual(Result.succeed(false));
+    }
+  });
+
+  test("fails on any other npm error rather than guessing", async () => {
+    const { result } = await versionExists({ exitCode: 1, stdout: "", stderr: "npm error code ETIMEDOUT" });
+    expect(Result.isFailure(result) && result.failure).toBe(`npm view failed for ${SPEC}:\nnpm error code ETIMEDOUT`);
+  });
+
+  test("fails when npm succeeds without printing a version", async () => {
+    const { result } = await versionExists({ exitCode: 0, stdout: "", stderr: "" });
+    expect(Result.isFailure(result)).toBe(true);
+  });
+
+  test("asks the registry the package publishes to, or npm's configured one", async () => {
+    expect((await versionExists({ exitCode: 1, stdout: "", stderr: "E404", registry: "https://registry.example/" })).argv.slice(-2))
+      .toEqual(["--registry", "https://registry.example/"]);
+    expect((await versionExists({ exitCode: 1, stdout: "", stderr: "E404" })).argv).not.toContain("--registry");
   });
 });

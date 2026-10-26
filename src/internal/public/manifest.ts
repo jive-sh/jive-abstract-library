@@ -16,7 +16,7 @@ export const REQUIRED_SCRIPTS = [
   "jive:cicd:get-config",
   "jive:cicd:build",
   "jive:cicd:audit",
-  "jive:cicd:deploy:url",
+  "jive:cicd:deploy:plan",
   "jive:cicd:upload-artifacts",
   "jive:cicd:deploy",
 ] as const;

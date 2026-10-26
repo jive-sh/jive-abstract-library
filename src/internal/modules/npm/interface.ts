@@ -37,6 +37,12 @@ export interface INpm {
    * its reason, since the caller retries.
    */
   availability(input: { readonly spec: string; readonly registry: Option.Option<string> }): EffectGen<Availability>;
+  /**
+   * Whether `registry` lists `spec` (`<name>@<version>`): the registry the package publishes to, or npm's
+   * configured one when none is given. A missing package and a missing version are both false; anything but
+   * found or 404 fails, since a wrong answer either republishes a version or skips a release.
+   */
+  versionExists(input: { readonly spec: string; readonly registry: Option.Option<string> }): EffectGen<boolean, string>;
   /** Whether the registry has any version of this package. Fails on anything but found or 404. */
   packageExists(name: string): EffectGen<boolean, string>;
   /**

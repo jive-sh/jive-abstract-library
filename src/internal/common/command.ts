@@ -1,14 +1,17 @@
-import { Effect, Layer, Logger, Result, pipe } from "effect";
+import { Effect, Layer, Logger, Result, Schema, pipe } from "effect";
 import { Command } from "commander";
 import { effunct, type EffectGen } from "effective-modules";
 import { layerLive } from "./layer";
 import { stderrLogger } from "./logger";
 import { readDeployEnvironment, readPipelineContext, type PipelineContext } from "./pipeline-context";
+import { DeployPlan } from "../public/deploy-plan";
 import type { LibraryModules } from "../modules";
 
 type CicdAction<R> = () => EffectGen<void, string, R>;
 type PipelineAction<R> = (context: PipelineContext) => EffectGen<void, string, R>;
-type DeployAction<R> = (input: { environment: string; context: PipelineContext }) => EffectGen<void, string, R>;
+type DeployInput = { environment: string; context: PipelineContext };
+type DeployAction<R> = (input: DeployInput) => EffectGen<void, string, R>;
+type DeployPlanAction<R> = (input: DeployInput) => EffectGen<DeployPlan, string, R>;
 
 /**
  * Wires the `cicd` subcommands of one abstract's CLI. Every abstract's hooks read the same pipeline inputs
@@ -20,8 +23,13 @@ export interface CicdCommandFactory<R> {
   readonly makeCicdCommand: (name: string, description: string, action: CicdAction<R>) => Command;
   /** A `cicd` subcommand given the run's pipeline context but no deploy target (`upload-artifacts`). */
   readonly makePipelineCommand: (name: string, description: string, action: PipelineAction<R>) => Command;
-  /** A deploy hook, which additionally receives the environment it is acting on (`deploy-url`, `deploy`). */
+  /** A deploy hook, which additionally receives the environment it is acting on (`deploy`). */
   readonly makeDeployCommand: (name: string, description: string, action: DeployAction<R>) => Command;
+  /**
+   * The `deploy-plan` hook: given the same input as `deploy`, its action decides whether there is anything to
+   * deploy to that environment, and the command prints that decision as the JSON the pipeline validates.
+   */
+  readonly makeDeployPlanCommand: (name: string, description: string, action: DeployPlanAction<R>) => Command;
 }
 
 /**
@@ -63,8 +71,22 @@ export function makeCicdCommandFactory<R, E>(layer: Layer.Layer<R, E, never>): C
       }
       return new Command(name).description(description).action(() => runCommand(program));
     },
+    makeDeployPlanCommand: (name, description, action) => {
+      function* program(): EffectGen<void, string, R> {
+        const plan = yield* action({
+          environment: yield* readDeployEnvironment(name),
+          context: yield* readPipelineContext(name),
+        });
+        const encoded = yield* pipe(
+          Schema.encodeUnknownEffect(DeployPlan)(plan),
+          Effect.mapError((e) => `${name} produced an invalid plan: ${e.message}`),
+        );
+        process.stdout.write(`${JSON.stringify(encoded)}\n`);
+      }
+      return new Command(name).description(description).action(() => runCommand(program));
+    },
   };
 }
 
-export const { makeCicdCommand, makePipelineCommand, makeDeployCommand }: CicdCommandFactory<LibraryModules> =
+export const { makeCicdCommand, makePipelineCommand, makeDeployCommand, makeDeployPlanCommand }: CicdCommandFactory<LibraryModules> =
   makeCicdCommandFactory(layerLive);

@@ -7,6 +7,7 @@ import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS } from "../builder/interface";
 import type { DeployInput, IDeployer } from "./interface";
 import { baseDistTag, baseVersion, baseVersionOf, platformDistTag, platformVersion } from "./versions";
+import { downloadTimesSummary, platformDownloadedLine, publishedBaseLine, publishingLine, type PlatformDownloadTime } from "./download-times";
 
 /**
  * How long a release waits for the registry to serve its platform packages before publishing the base
@@ -29,7 +30,7 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
   .uses(libraryModules.OSPlatform, libraryModules.Npm, FileSystem.FileSystem)
   implements IDeployer {
 
-  *deploy({ environment, sourceCommitSha }: DeployInput): EffectGen<void, string> {
+  *deploy({ environment, sourceCommitSha, maybeJobSummaryPath }: DeployInput): EffectGen<void, string> {
     const outDir = resolve(yield* this.dependencies.OSPlatform.getCurrentDirectory(), OUTDIR);
     const { name, version } = yield* this.readBuiltBase(outDir);
     const local = isEnvironment(environment, LOCAL_ENVIRONMENT);
@@ -53,10 +54,10 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     // completion order, so the plan has to be readable on its own.
     const stampedBase = baseVersion(version, environment, sourceCommitSha);
     const baseTag = baseDistTag(environment, sourceCommitSha);
-    yield* Effect.log(`${local ? "Installing" : "Publishing"} ${name}`);
+    yield* Effect.log(local ? `Installing ${name}` : publishingLine(name));
     yield* Effect.log(`Commit ${sourceCommitSha.slice(0, 8) || "unknown"}, built from version ${version} in ${OUTDIR}`);
     yield* Effect.log(local ? "Packages (local-only, no tags):" : "Packages:");
-    yield* Effect.log(`  - ${BASE_PACKAGE_DIR}: ${stampedBase}${local ? "" : ` (tag ${baseTag})`}`);
+    yield* Effect.log(local ? `  - ${BASE_PACKAGE_DIR}: ${stampedBase}` : publishedBaseLine({ version: stampedBase, distTag: baseTag }));
     for (const platformPackage of local ? yield* this.localOnly(platformPackages) : platformPackages) {
       yield* Effect.log(`  - ${platformPackage.platform}: ${platformPackage.version}${local ? "" : ` (tag ${platformPackage.distTag})`}`);
     }
@@ -67,7 +68,7 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
       yield* this.installLocally({ outDir, name, stampedBase, platformPackages });
       return;
     }
-    yield* this.publishRelease({ outDir, name, stampedBase, baseTag, platformPackages });
+    yield* this.publishRelease({ outDir, name, stampedBase, baseTag, platformPackages, maybeJobSummaryPath });
   }
 
   /**
@@ -79,9 +80,9 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
    */
   private *publishRelease(input: {
     outDir: string; name: string; stampedBase: string; baseTag: string;
-    platformPackages: ReadonlyArray<PlatformPackage>;
+    platformPackages: ReadonlyArray<PlatformPackage>; maybeJobSummaryPath: Option.Option<string>;
   }): EffectGen<void, string> {
-    const { outDir, name, stampedBase, baseTag, platformPackages } = input;
+    const { outDir, name, stampedBase, baseTag, platformPackages, maybeJobSummaryPath } = input;
 
     const baseDir = resolve(outDir, BASE_PACKAGE_DIR);
     yield* this.updateManifest(baseDir, {
@@ -131,7 +132,7 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     }
 
     if (platformPackages.length > 0) {
-      yield* this.waitUntilDownloadable({ name, baseDir, platformPackages });
+      yield* this.waitUntilDownloadable({ name, version: stampedBase, baseDir, platformPackages, maybeJobSummaryPath });
     }
 
     yield* Effect.log("Publishing base package");
@@ -143,12 +144,14 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
    * Checks every platform package until each downloads from the registry the package publishes to, and
    * fails, leaving the base package unpublished, if any still does not after the timeout. A base package
    * published before its platform packages download is installed without one: package managers skip an
-   * optional dependency they cannot fetch, and its commands then have no binary.
+   * optional dependency they cannot fetch, and its commands then have no binary. Either way, it writes the
+   * download times it saw to the job summary.
    */
   private *waitUntilDownloadable(input: {
-    name: string; baseDir: string; platformPackages: ReadonlyArray<PlatformPackage>;
+    name: string; version: string; baseDir: string; platformPackages: ReadonlyArray<PlatformPackage>;
+    maybeJobSummaryPath: Option.Option<string>;
   }): EffectGen<void, string> {
-    const { name, baseDir, platformPackages } = input;
+    const { name, version, baseDir, platformPackages, maybeJobSummaryPath } = input;
     const manifest = yield* pipe(
       Schema.decodeUnknownEffect(PublishConfig)(yield* this.readManifest(baseDir)),
       Effect.mapError((e) => `${baseDir}/package.json has an invalid publishConfig: ${e.message}`),
@@ -162,6 +165,11 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
       + ` for up to ${PLATFORM_PACKAGES_TIMEOUT_SECONDS / 60} minutes)`,
     );
     const startedAt = yield* Clock.currentTimeMillis;
+    const downloads: PlatformDownloadTime[] = [];
+    const writeSummary = (notDownloadable: ReadonlyArray<string>) => this.appendJobSummary(maybeJobSummaryPath, downloadTimesSummary({
+      packageName: name, version, downloads, notDownloadable,
+      checkSeconds: PLATFORM_PACKAGES_CHECK_SECONDS, timeoutSeconds: PLATFORM_PACKAGES_TIMEOUT_SECONDS,
+    }));
     let pending = platformPackages;
     while (true) {
       const checks = yield* Effect.all(
@@ -173,15 +181,20 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
       for (const [index, availability] of checks.entries()) {
         const platformPackage = pending[index] as PlatformPackage;
         if (availability._tag === "Downloadable") {
-          yield* Effect.log(`  - ${platformPackage.platform} downloads after ${waitedSeconds}s: ${availability.tarballUrl}`);
+          downloads.push({ platform: platformPackage.platform, seconds: waitedSeconds });
+          yield* Effect.log(platformDownloadedLine({ platform: platformPackage.platform, seconds: waitedSeconds, tarballUrl: availability.tarballUrl }));
         } else {
           stillPending.push({ platformPackage, reason: availability.reason });
         }
       }
-      if (stillPending.length === 0) return;
+      if (stillPending.length === 0) {
+        yield* writeSummary([]);
+        return;
+      }
 
       const missing = stillPending.map(({ platformPackage, reason }) => `${platformPackage.platform} (${name}@${platformPackage.version}): ${reason}`).join("; ");
       if (waitedSeconds + PLATFORM_PACKAGES_CHECK_SECONDS > PLATFORM_PACKAGES_TIMEOUT_SECONDS) {
+        yield* writeSummary(stillPending.map(({ platformPackage }) => platformPackage.platform));
         return yield* Effect.fail(
           `After ${PLATFORM_PACKAGES_TIMEOUT_SECONDS / 60} minutes the registry still does not serve every platform package,`
           + ` so the base package was not published: ${missing}`,
@@ -191,6 +204,15 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
       yield* Effect.sleep(`${PLATFORM_PACKAGES_CHECK_SECONDS} seconds`);
       pending = stillPending.map(({ platformPackage }) => platformPackage);
     }
+  }
+
+  /** Appends markdown to the job summary file, when the job has one. */
+  private *appendJobSummary(maybeJobSummaryPath: Option.Option<string>, markdown: string): EffectGen<void, string> {
+    if (Option.isNone(maybeJobSummaryPath)) return;
+    yield* pipe(
+      this.getDependency(FileSystem.FileSystem).writeFileString(maybeJobSummaryPath.value, markdown, { flag: "a" }),
+      Effect.mapError((e) => `Cannot write the job summary ${maybeJobSummaryPath.value}: ${e.message}`),
+    );
   }
 
   /** Polls until the registry reports the package, so the parallel publishes that follow are updates. */

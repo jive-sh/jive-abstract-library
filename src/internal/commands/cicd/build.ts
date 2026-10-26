@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { LOCAL_ENVIRONMENT } from "../../public/manifest";
 import { libraryModules } from "../../modules";
 import { makeCicdCommand } from "../../common/command";
@@ -12,6 +12,7 @@ export const build = makeCicdCommand(
     yield* (yield* libraryModules.Deployer).deploy({
       environment: LOCAL_ENVIRONMENT,
       sourceCommitSha: "",
+      maybeJobSummaryPath: Option.none(),
     });
     yield* Effect.log("Build complete");
   },

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Duration, Effect, Fiber, Layer, Logger, Option, Result, pipe } from "effect";
@@ -11,6 +11,7 @@ import { NpmImpl } from "../npm/impl";
 import { Availability } from "../npm/interface";
 import { OSPlatformImpl } from "../os-platform/impl";
 import { DeployerImpl } from "./impl";
+import { parseReleaseDownloadTimes } from "./download-times";
 
 const PKG = "@test/demo";
 const PLATFORMS = ["darwin-arm64", "linux-x64"] as const;
@@ -50,21 +51,28 @@ function release(input: { downloadableAfter: Partial<Record<(typeof PLATFORMS)[n
     },
   });
   const osPlatform = OSPlatformImpl.mockLayer({ *getCurrentDirectory() { return dir; } });
-  return { events, registries, layer: pipe(DeployerImpl.Layer, Layer.provideMerge(npm), Layer.provideMerge(osPlatform), Layer.provideMerge(BunFileSystem.layer)) };
+  return { dir, events, registries, layer: pipe(DeployerImpl.Layer, Layer.provideMerge(npm), Layer.provideMerge(osPlatform), Layer.provideMerge(BunFileSystem.layer)) };
 }
 
 /**
  * Deploys to `latest` while moving the clock on 10 seconds at a time, up to `advanceSeconds`, and returns
- * the outcome and what was logged. Each step first lets real time pass, so the deploy's file and process
+ * the outcome and what was logged. With `writeJobSummary`, the deploy is given a job summary file in the
+ * fixture's folder, and its contents are returned. Each step first lets real time pass, so the deploy's file and process
  * work reaches its next sleep before the clock moves.
  */
-async function deploy(fixture: ReturnType<typeof release>, advanceSeconds: number) {
+async function deploy(fixture: ReturnType<typeof release>, advanceSeconds: number, writeJobSummary = false) {
+  const jobSummaryPath = join(fixture.dir, "job-summary.md");
+  if (writeJobSummary) writeFileSync(jobSummaryPath, "Earlier step's summary\n");
   const logs: string[] = [];
   const capture = Logger.make(({ message }) => { logs.push(Array.isArray(message) ? message.join(" ") : String(message)); });
   const result = await Effect.runPromise(pipe(
     Effect.gen(function* () {
       const fiber = yield* Effect.forkChild(Effect.result(effunct(function* () {
-        yield* (yield* libraryModules.Deployer).deploy({ environment: "latest", sourceCommitSha: "abcdef1234" });
+        yield* (yield* libraryModules.Deployer).deploy({
+          environment: "latest",
+          sourceCommitSha: "abcdef1234",
+          maybeJobSummaryPath: writeJobSummary ? Option.some(jobSummaryPath) : Option.none(),
+        });
       })()));
       for (let advanced = 0; advanced < advanceSeconds; advanced += 10) {
         yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 5)));
@@ -76,13 +84,13 @@ async function deploy(fixture: ReturnType<typeof release>, advanceSeconds: numbe
     Effect.provide(TestClock.layer()),
     Effect.provide(Logger.layer([capture])),
   ));
-  return { result, logs };
+  return { result, logs, jobSummary: writeJobSummary ? readFileSync(jobSummaryPath, "utf8") : "" };
 }
 
 describe("publishing a release", () => {
   test("publishes the base package only after every platform package downloads, logging the wait", async () => {
     const fixture = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 2 } });
-    const { result, logs } = await deploy(fixture, 60);
+    const { result, logs } = await deploy(fixture, 60, true);
     expect(Result.isSuccess(result)).toBe(true);
     expect(fixture.events).toEqual([
       "publish darwin-arm64",
@@ -100,12 +108,42 @@ describe("publishing a release", () => {
 
   test("leaves the base package unpublished when a platform package never downloads", async () => {
     const fixture = release({ downloadableAfter: { "darwin-arm64": 0 } });
-    const { result } = await deploy(fixture, 960);
+    const { result, jobSummary } = await deploy(fixture, 960, true);
     expect(fixture.events).not.toContain("publish base");
     expect(Result.isFailure(result) && result.failure).toBe(
       "After 15 minutes the registry still does not serve every platform package, so the base package was not published:"
       + ` linux-x64 (${PKG}@1.0.0-latest-linux-x64): the registry does not list it yet`,
     );
+    expect(jobSummary).toContain("| darwin-arm64 | 0s |\n| linux-x64 | not downloadable after 15 minutes |\n");
+  });
+
+  test("appends each platform package's download time to the job summary, slowest last", async () => {
+    const fixture = release({ downloadableAfter: { "darwin-arm64": 1, "linux-x64": 0 } });
+    const { result, jobSummary } = await deploy(fixture, 30, true);
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(jobSummary).toBe([
+      "Earlier step's summary",
+      `### Platform package download times: ${PKG}@1.0.0`,
+      "",
+      "Seconds from publishing every platform package until each downloads from the registry (checked every 10 seconds, for up to 15 minutes).",
+      "",
+      "| Platform | Downloads after |",
+      "| --- | --- |",
+      "| linux-x64 | 0s |",
+      "| darwin-arm64 | 10s |",
+      "",
+    ].join("\n"));
+  });
+
+  test("logs download times that read back as the release's times", async () => {
+    const fixture = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 2 } });
+    const { logs } = await deploy(fixture, 60);
+    expect(parseReleaseDownloadTimes(logs)).toEqual([{
+      packageName: PKG,
+      version: "1.0.0",
+      distTag: "latest",
+      downloads: [{ platform: "darwin-arm64", seconds: 0 }, { platform: "linux-x64", seconds: 20 }],
+    }]);
   });
 
   test("checks the registry the package publishes to", async () => {

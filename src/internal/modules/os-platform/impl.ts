@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { implementing, type EffectGen } from "effective-modules";
@@ -100,6 +100,11 @@ export class OSPlatformImpl extends implementing(libraryModules.OSPlatform) impl
     const value = yield* Effect.sync(() => process.env[name]);
     if (!value) return yield* Effect.fail(`${name} is not set`);
     return value;
+  }
+
+  *readEnv(name: string): EffectGen<Option.Option<string>> {
+    const value = yield* Effect.sync(() => process.env[name]);
+    return value ? Option.some(value) : Option.none();
   }
 
   *getHomeDirectory(): EffectGen<string> {

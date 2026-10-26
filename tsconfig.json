@@ -28,7 +28,8 @@
       "noPropertyAccessFromIndexSignature": true
     },
     "include": [
-      "src/**/*.ts"
+      "src/**/*.ts",
+      "scripts/**/*.ts"
     ],
     "exclude": [
       "dist",

@@ -1,3 +1,4 @@
+import type { Option } from "effect";
 import type { EffectGen } from "effective-modules";
 
 export type ProcessStdio = "pipe" | "inherit" | "ignore";
@@ -44,6 +45,8 @@ export interface IOSPlatform {
   getCurrentPlatform(): EffectGen<{ readonly os: string; readonly cpu: string }>;
   /** Reads an environment variable, failing when it is unset or empty. */
   requireEnv(name: string): EffectGen<string, string>;
+  /** Reads an environment variable that may be absent; unset and empty are both none. */
+  readEnv(name: string): EffectGen<Option.Option<string>>;
   /** The current user's home directory, which is where per-user daemon state lives. */
   getHomeDirectory(): EffectGen<string>;
   /** This process's own executable, which is how a daemon recognises its own registration. */

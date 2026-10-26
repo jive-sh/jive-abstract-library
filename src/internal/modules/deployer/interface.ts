@@ -1,3 +1,4 @@
+import type { Option } from "effect";
 import type { EffectGen } from "effective-modules";
 
 export interface DeployInput {
@@ -5,6 +6,11 @@ export interface DeployInput {
   readonly environment: string;
   /** Commit the build came from; only the preview environment puts it in the version. */
   readonly sourceCommitSha: string;
+  /**
+   * The file the CI provider renders as this job's summary (GitHub Actions' `GITHUB_STEP_SUMMARY`). A
+   * release appends its platform packages' download times to it; outside CI there is none.
+   */
+  readonly maybeJobSummaryPath: Option.Option<string>;
 }
 
 export interface IDeployer {

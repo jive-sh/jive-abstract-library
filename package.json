@@ -28,7 +28,8 @@
     "jive:cicd:deploy:url": "jive-library cicd deploy-url",
     "jive:cicd:upload-artifacts": "jive-library cicd upload-artifacts",
     "jive:cicd:deploy": "bun src/entrypoints/jive-library.ts cicd deploy",
-    "dev": "bun src/entrypoints/jive-library.ts dev"
+    "dev": "bun src/entrypoints/jive-library.ts dev",
+    "platform-download-times": "bun scripts/platform-download-times.ts"
   },
   "jive": {
     "cicd": {

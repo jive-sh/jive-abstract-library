@@ -198,10 +198,15 @@ const generatedFields = Object.fromEntries(
   GENERATED_PACKAGE_JSON_FIELDS.map((field) => [field, Schema.optionalKey(Schema.Never)]),
 ) as { readonly [Field in (typeof GENERATED_PACKAGE_JSON_FIELDS)[number]]: Schema.optionalKey<typeof Schema.Never> };
 
-function packageJsonFields(library: typeof LibrarySchema) {
+/**
+ * The package.json fields every package extending a Jive abstract has, with the abstract's own blocks
+ * (`library` here) placed beside `cicd` under `jive`. One definition, so the hook list and the shape of
+ * `cicd` cannot drift between abstracts.
+ */
+function jivePackageJsonFields<const AbstractFields extends Schema.Struct.Fields>(abstractFields: AbstractFields) {
   return {
     $schema: Schema.NonEmptyString.annotate({
-      description: "Path to this package's generated schema, ./package.schema.json. The watch daemon writes that file and sets this field.",
+      description: "Path to this package's generated schema, ./package.schema.json. The dev server writes that file and sets this field.",
     }),
     name: Schema.NonEmptyString.check(Schema.isPattern(/^(?:@[^/]+\/[^/]+|(?!@)[^/]+)$/)),
     version: Schema.NonEmptyString,
@@ -217,9 +222,22 @@ function packageJsonFields(library: typeof LibrarySchema) {
     peerDependencies: Schema.OptionFromOptionalKey(Schema.Record(Schema.String, Schema.String)),
     peerDependenciesMeta: Schema.OptionFromOptionalKey(Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Unknown))),
     publishConfig: Schema.OptionFromOptionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-    jive: Schema.Struct({ cicd: CicdSchema, library }),
-    ...generatedFields,
+    jive: Schema.Struct({ cicd: CicdSchema, ...abstractFields }),
   };
+}
+
+function packageJsonFields(library: typeof LibrarySchema) {
+  return { ...jivePackageJsonFields({ library }), ...generatedFields };
+}
+
+/**
+ * The package.json schema for a package extending another abstract: the fields every Jive package has
+ * (the six required hooks, `jive.cicd`, the usual npm fields), plus that abstract's own blocks under
+ * `jive`, e.g. `makeJivePackageJsonSchema({ "backend-convex": BackendConvexSchema })`. Unknown top-level
+ * keys are left to the decoder's `onExcessProperty` setting.
+ */
+export function makeJivePackageJsonSchema<const AbstractFields extends Schema.Struct.Fields>(abstractFields: AbstractFields) {
+  return Schema.Struct(jivePackageJsonFields(abstractFields));
 }
 
 /**

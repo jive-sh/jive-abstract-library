@@ -1,9 +1,11 @@
 /**
- * The public surface of this template.
+ * The public surface of this abstract.
  *
- * Three things live here: the shape a package.json must have to be built by this template, the release
- * helpers a package's own deploy script may need, and the watch daemon every Jive template runs. A
- * template that derives from this one supplies its `genPackageJsonSchema` and gets the rest unchanged.
+ * What lives here: the shape a package.json must have to be built by this abstract, the release helpers a
+ * package's own deploy script may need, the dev server, daemon registration, upgrades, and the pieces every
+ * other abstract builds its own CLI from: `makeCicdCommandFactory` (the six hooks' input reading and exit
+ * handling), `makeJivePackageJsonSchema` (the fields every Jive package has, plus that abstract's own block)
+ * and `loadPackageJson`. An abstract imports these rather than restating them.
  */
 
 export {
@@ -26,12 +28,18 @@ export {
   REQUIRED_SCRIPTS,
   RESERVED_ENVIRONMENTS,
   isEnvironment,
+  makeJivePackageJsonSchema,
   makeLibrarySchema,
   makePackageJsonSchema,
   type CicdConfig,
   type LibraryConfig,
   type PackageJson,
 } from "./internal/public/manifest";
+
+export { loadPackageJson } from "./internal/public/package-json";
+
+export { makeCicdCommandFactory, type CicdCommandFactory } from "./internal/common/command";
+export type { PipelineContext } from "./internal/common/pipeline-context";
 
 export { discoverDaemonNames, packageRootDir } from "./internal/public/daemons";
 

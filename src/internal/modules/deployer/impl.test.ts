@@ -93,17 +93,17 @@ describe("publishing a release", () => {
       `check ${PKG}@1.0.0-latest-linux-x64`,
       "publish base",
     ]);
-    expect(logs).toContain("Waiting for npm's registry to serve all 2 platform packages before publishing the base package (checking every 10 seconds, for up to 10 minutes)");
+    expect(logs).toContain("Waiting for npm's registry to serve all 2 platform packages before publishing the base package (checking every 10 seconds, for up to 15 minutes)");
     expect(logs).toContain(`  Still waiting after 0s for linux-x64 (${PKG}@1.0.0-latest-linux-x64): the registry does not list it yet`);
     expect(logs).toContain(`  - linux-x64 downloads after 20s: https://registry.example/${PKG}@1.0.0-latest-linux-x64.tgz`);
   });
 
   test("leaves the base package unpublished when a platform package never downloads", async () => {
     const fixture = release({ downloadableAfter: { "darwin-arm64": 0 } });
-    const { result } = await deploy(fixture, 660);
+    const { result } = await deploy(fixture, 960);
     expect(fixture.events).not.toContain("publish base");
     expect(Result.isFailure(result) && result.failure).toBe(
-      "After 10 minutes the registry still does not serve every platform package, so the base package was not published:"
+      "After 15 minutes the registry still does not serve every platform package, so the base package was not published:"
       + ` linux-x64 (${PKG}@1.0.0-latest-linux-x64): the registry does not list it yet`,
     );
   });
@@ -113,6 +113,6 @@ describe("publishing a release", () => {
     const { result, logs } = await deploy(fixture, 10);
     expect(Result.isSuccess(result)).toBe(true);
     expect(fixture.registries).toEqual([Option.some("https://registry.example/"), Option.some("https://registry.example/")]);
-    expect(logs).toContain("Waiting for https://registry.example/ to serve all 2 platform packages before publishing the base package (checking every 10 seconds, for up to 10 minutes)");
+    expect(logs).toContain("Waiting for https://registry.example/ to serve all 2 platform packages before publishing the base package (checking every 10 seconds, for up to 15 minutes)");
   });
 });

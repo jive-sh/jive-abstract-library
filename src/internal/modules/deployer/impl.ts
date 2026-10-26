@@ -12,7 +12,7 @@ import { baseDistTag, baseVersion, baseVersionOf, platformDistTag, platformVersi
  * How long a release waits for the registry to serve its platform packages before publishing the base
  * package, and how often it checks.
  */
-const PLATFORM_PACKAGES_TIMEOUT_SECONDS = 600;
+const PLATFORM_PACKAGES_TIMEOUT_SECONDS = 900;
 const PLATFORM_PACKAGES_CHECK_SECONDS = 10;
 
 /** The registry a package publishes to, when its manifest names one rather than using npm's configured registry. */

@@ -2,6 +2,8 @@ import { Effect, FileSystem, Layer, pipe } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { FetchHttpClient } from "effect/http";
 import { effunct } from "effective-modules";
+import type { Option } from "effect";
+import type { DeployPlan } from "./deploy-plan";
 import { resolve } from "node:path";
 import { libraryModules } from "../modules";
 import { NpmImpl } from "../modules/npm/impl";
@@ -47,6 +49,20 @@ export function ensureNpm(): Effect.Effect<string, string> {
   return pipe(
     effunct(function* () {
       return yield* (yield* libraryModules.Npm).ensureAvailable();
+    })(),
+    Effect.provide(layer),
+  );
+}
+
+/**
+ * The `deploy-plan` hook's answer for a package whose deploy publishes `<name>@<version>` to npm: nothing to
+ * deploy when `registry` (the package's `publishConfig.registry`; none means npm's configured registry) already
+ * lists that version, else a deploy to the version's npm page. The same check this abstract's own plan makes.
+ */
+export function planNpmRelease(input: { readonly name: string; readonly version: string; readonly registry: Option.Option<string> }): Effect.Effect<DeployPlan, string> {
+  return pipe(
+    effunct(function* () {
+      return yield* (yield* libraryModules.Npm).planRelease(input);
     })(),
     Effect.provide(layer),
   );

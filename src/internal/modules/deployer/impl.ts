@@ -2,7 +2,7 @@ import { Clock, Effect, FileSystem, Option, Schema, pipe } from "effect";
 import { effunct, implementing, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
 import { isEnvironment, LOCAL_ENVIRONMENT } from "../../public/manifest";
-import { INSTALL_SCRIPT, LOCAL_ALIAS_SUFFIX, NPM_WEBSITE_URL, OUTDIR, REPAIR_ONLY_FLAG } from "../../common/constants";
+import { INSTALL_SCRIPT, LOCAL_ALIAS_SUFFIX, OUTDIR, REPAIR_ONLY_FLAG } from "../../common/constants";
 import type { DeployPlan } from "../../public/deploy-plan";
 import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS } from "../builder/interface";
@@ -35,13 +35,8 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     const { name, version } = yield* this.readBuiltBase(outDir);
     const stampedBase = baseVersion(version, environment, sourceCommitSha);
     const registry = yield* this.readPublishRegistry(resolve(outDir, BASE_PACKAGE_DIR));
-    const registryName = Option.getOrElse(registry, () => "npm's registry");
-    if (yield* this.dependencies.Npm.versionExists({ spec: `${name}@${stampedBase}`, registry })) {
-      yield* Effect.log(`${name}@${stampedBase} is already on ${registryName}, so there is nothing to publish to ${environment}`);
-      return { deploy: false };
-    }
-    yield* Effect.log(`${name}@${stampedBase} is not on ${registryName} yet, so ${environment} publishes it`);
-    return { deploy: true, url: `${NPM_WEBSITE_URL}/package/${name}/v/${stampedBase}` };
+    yield* Effect.log(`Planning ${environment}: the base package's version there is ${stampedBase}`);
+    return yield* this.dependencies.Npm.planRelease({ name, version: stampedBase, registry });
   }
 
   *deploy({ environment, sourceCommitSha, maybeJobSummaryPath }: DeployInput): EffectGen<void, string> {

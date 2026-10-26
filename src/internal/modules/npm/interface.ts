@@ -1,5 +1,6 @@
 import { Data, type Option } from "effect";
 import type { EffectGen } from "effective-modules";
+import type { DeployPlan } from "../../public/deploy-plan";
 
 export interface PublishInput {
   readonly tarballPath: string;
@@ -43,6 +44,12 @@ export interface INpm {
    * found or 404 fails, since a wrong answer either republishes a version or skips a release.
    */
   versionExists(input: { readonly spec: string; readonly registry: Option.Option<string> }): EffectGen<boolean, string>;
+  /**
+   * What publishing `<name>@<version>` to `registry` would do: nothing when the registry already lists that
+   * version, since npm refuses to publish over it; otherwise a deploy whose URL is the version's npm page.
+   * Every package whose deploy publishes to npm plans with this, so a push without a version bump is skipped.
+   */
+  planRelease(input: { readonly name: string; readonly version: string; readonly registry: Option.Option<string> }): EffectGen<DeployPlan, string>;
   /** Whether the registry has any version of this package. Fails on anything but found or 404. */
   packageExists(name: string): EffectGen<boolean, string>;
   /**

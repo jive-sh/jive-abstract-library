@@ -110,3 +110,32 @@ describe("versionExists", () => {
     expect((await versionExists({ exitCode: 1, stdout: "", stderr: "E404" })).argv).not.toContain("--registry");
   });
 });
+
+describe("planRelease", () => {
+  /** Plans publishing @test/demo@1.0.0 with `npm view` answering as `versionExists` does above. */
+  const planRelease = async (input: { exitCode: number; stdout: string; stderr: string }) => {
+    const osPlatform = OSPlatformImpl.mockLayer({
+      *spawnProcess() { return input; },
+    });
+    return Effect.runPromise(pipe(
+      effunct(function* () {
+        return yield* (yield* libraryModules.Npm).planRelease({ name: "@test/demo", version: "1.0.0", registry: Option.none() });
+      })(),
+      Effect.provide(pipe(NpmImpl.Layer, Layer.provideMerge(osPlatform), Layer.provideMerge(BunFileSystem.layer), Layer.provideMerge(FetchHttpClient.layer))),
+      Effect.result,
+    ));
+  };
+
+  test("plans nothing when the registry already lists the version", async () => {
+    expect(await planRelease({ exitCode: 0, stdout: '"1.0.0"', stderr: "" })).toEqual(Result.succeed({ deploy: false }));
+  });
+
+  test("plans a deploy to the version's npm page when the registry does not list it", async () => {
+    expect(await planRelease({ exitCode: 1, stdout: "", stderr: "npm error code E404" }))
+      .toEqual(Result.succeed({ deploy: true, url: "https://www.npmjs.com/package/@test/demo/v/1.0.0" }));
+  });
+
+  test("fails when the registry cannot say", async () => {
+    expect(Result.isFailure(await planRelease({ exitCode: 1, stdout: "", stderr: "npm error code ETIMEDOUT" }))).toBe(true);
+  });
+});

@@ -3,7 +3,8 @@ import { Effect, FileSystem, Option, Result, Schema, pipe } from "effect";
 import { HttpClient } from "effect/http";
 import { effunct, implementing, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
-import { NPM_PACKAGE_SPEC } from "../../common/constants";
+import { NPM_PACKAGE_SPEC, NPM_WEBSITE_URL } from "../../common/constants";
+import type { DeployPlan } from "../../public/deploy-plan";
 import { libraryModules } from "../index";
 import { Availability, type INpm, type InstallTarballInput, type PublishInput } from "./interface";
 
@@ -138,6 +139,17 @@ export class NpmImpl extends implementing(libraryModules.Npm)
     const version = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.NonEmptyString))(result.stdout.trim());
     if (Option.isNone(version)) return yield* Effect.fail(`npm view printed no version for ${spec}:\n${output}`);
     return true;
+  }
+
+  *planRelease(input: { readonly name: string; readonly version: string; readonly registry: Option.Option<string> }): EffectGen<DeployPlan, string> {
+    const { name, version, registry } = input;
+    const registryName = Option.getOrElse(registry, () => "npm's registry");
+    if (yield* this.versionExists({ spec: `${name}@${version}`, registry })) {
+      yield* Effect.log(`${name}@${version} is already on ${registryName}, so there is nothing to publish`);
+      return { deploy: false };
+    }
+    yield* Effect.log(`${name}@${version} is not on ${registryName} yet, so it is published`);
+    return { deploy: true, url: `${NPM_WEBSITE_URL}/package/${name}/v/${version}` };
   }
 
   *packageExists(name: string): EffectGen<boolean, string> {

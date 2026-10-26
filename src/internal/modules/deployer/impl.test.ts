@@ -43,10 +43,12 @@ function release(input: {
     *pack(packageDir: string) { return `${packageDir}.tgz`; },
     *publish({ tarballPath }: { tarballPath: string }) { events.push(`publish ${basename(tarballPath, ".tgz")}`); },
     *packageExists() { return true; },
-    *versionExists({ spec, registry }: { spec: string; registry: Option.Option<string> }) {
+    *planRelease({ name, version, registry }: { name: string; version: string; registry: Option.Option<string> }) {
       registries.push(registry);
-      events.push(`versionExists ${spec}`);
-      return (input.published ?? []).includes(spec);
+      events.push(`planRelease ${name}@${version}`);
+      return (input.published ?? []).includes(`${name}@${version}`)
+        ? { deploy: false as const }
+        : { deploy: true as const, url: `https://www.npmjs.com/package/${name}/v/${version}` };
     },
     *availability({ spec, registry }: { spec: string; registry: Option.Option<string> }) {
       registries.push(registry);
@@ -174,21 +176,16 @@ describe("planning a release", () => {
     Effect.provide(Logger.layer([])),
   ));
 
-  test("plans nothing when the registry already lists the base package at this environment's version", async () => {
+  test("asks npm about the base package at this environment's version, and returns its answer", async () => {
     const fixture = release({ downloadableAfter: {}, published: [`${PKG}@1.0.0`] });
     expect(await plan(fixture, "latest")).toEqual({ deploy: false });
-    expect(fixture.events).toEqual([`versionExists ${PKG}@1.0.0`]);
-  });
-
-  test("plans a publish, linking the version's npm page, when the base package is not listed", async () => {
-    const fixture = release({ downloadableAfter: {}, published: [`${PKG}@1.0.0-latest-linux-x64`] });
-    expect(await plan(fixture, "latest")).toEqual({ deploy: true, url: `https://www.npmjs.com/package/${PKG}/v/1.0.0` });
+    expect(fixture.events).toEqual([`planRelease ${PKG}@1.0.0`]);
   });
 
   test("checks the version the environment stamps", async () => {
     const fixture = release({ downloadableAfter: {}, published: [`${PKG}@1.0.0`] });
     expect(await plan(fixture, "preview")).toEqual({ deploy: true, url: `https://www.npmjs.com/package/${PKG}/v/1.0.0-preview-abcdef12` });
-    expect(fixture.events).toEqual([`versionExists ${PKG}@1.0.0-preview-abcdef12`]);
+    expect(fixture.events).toEqual([`planRelease ${PKG}@1.0.0-preview-abcdef12`]);
   });
 
   test("asks the registry the package publishes to, or npm's configured one", async () => {

@@ -10,6 +10,7 @@
 
 export {
   ensureNpm,
+  planNpmRelease,
   publishPackage,
   releaseDistTag,
   releaseVersion,

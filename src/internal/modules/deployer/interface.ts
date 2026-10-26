@@ -1,6 +1,7 @@
 import type { Option } from "effect";
 import type { EffectGen } from "effective-modules";
 import type { DeployPlan } from "../../public/deploy-plan";
+import type { ProvisionWithJive } from "../../public/manifest";
 
 export interface DeployInput {
   /** Target the build is being released to, e.g. "latest", "preview", or "local". */
@@ -12,6 +13,11 @@ export interface DeployInput {
    * release appends its platform packages' download times to it; outside CI there is none.
    */
   readonly maybeJobSummaryPath: Option.Option<string>;
+  /**
+   * The package's `jive.library.provisionWithJive`: when set, a release asks that Jive server to provision
+   * the package before publishing anything. The local environment never asks.
+   */
+  readonly provisionWithJive: Option.Option<ProvisionWithJive>;
 }
 
 export interface PlanInput {
@@ -31,8 +37,8 @@ export interface IDeployer {
   plan(input: PlanInput): EffectGen<DeployPlan, string>;
   /**
    * Stamps the built package folders with versions computed for this environment, then distributes
-   * them: the local environment installs into the current workspace, every other environment packs
-   * and publishes to npm.
+   * them: the local environment installs into the current workspace, every other environment packs,
+   * asks Jive to provision the package when `provisionWithJive` is set, and publishes to npm.
    */
   deploy(input: DeployInput): EffectGen<void, string>;
 }

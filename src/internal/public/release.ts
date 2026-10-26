@@ -1,13 +1,15 @@
-import { Effect, FileSystem, Layer, pipe } from "effect";
+import { Effect, FileSystem, Layer, Option, pipe } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { FetchHttpClient } from "effect/http";
 import { effunct } from "effective-modules";
-import type { Option } from "effect";
 import type { DeployPlan } from "./deploy-plan";
+import type { ProvisionWithJive } from "./manifest";
 import { resolve } from "node:path";
 import { libraryModules } from "../modules";
+import { JiveServerImpl } from "../modules/jive-server/impl";
 import { NpmImpl } from "../modules/npm/impl";
 import { OSPlatformImpl } from "../modules/os-platform/impl";
+import { PipelineIdentityImpl } from "../modules/pipeline-identity/impl";
 import { baseDistTag, baseVersion } from "../modules/deployer/versions";
 
 /**
@@ -17,7 +19,9 @@ import { baseDistTag, baseVersion } from "../modules/deployer/versions";
  */
 
 const layer = pipe(
-  NpmImpl.Layer,
+  JiveServerImpl.Layer,
+  Layer.provideMerge(PipelineIdentityImpl.Layer),
+  Layer.provideMerge(NpmImpl.Layer),
   Layer.provideMerge(OSPlatformImpl.Layer),
   Layer.provideMerge(BunFileSystem.layer),
   Layer.provideMerge(FetchHttpClient.layer),
@@ -32,6 +36,12 @@ export interface ReleaseTarget {
   readonly version: string;
   /** npm dist-tag to publish under, usually from {@link releaseDistTag}. */
   readonly distTag: string;
+  /**
+   * The Jive server to provision the package with right before it is published, as a package's
+   * `jive.library.provisionWithJive` gives it, or none to publish without asking Jive. Required, so each
+   * abstract publishing through this function decides it.
+   */
+  readonly provisionWithJive: Option.Option<ProvisionWithJive>;
 }
 
 /** The version a package takes for this environment: bare on `latest`, prereleased otherwise. */
@@ -68,7 +78,10 @@ export function planNpmRelease(input: { readonly name: string; readonly version:
   );
 }
 
-/** Stamps the package's version into its manifest, packs it, and publishes it under its dist-tag. */
+/**
+ * Stamps the package's version into its manifest, packs it, asks Jive to provision it when the target says
+ * so, and publishes it under its dist-tag. A refusal from Jive fails before anything is published.
+ */
 export function publishPackage(target: ReleaseTarget): Effect.Effect<void, string> {
   return pipe(
     effunct(function* () {
@@ -89,6 +102,18 @@ export function publishPackage(target: ReleaseTarget): Effect.Effect<void, strin
         Effect.mapError((e) => `Cannot write ${manifestPath}: ${e.message}`),
       );
 
+      const name = manifest["name"];
+      if (typeof name !== "string") {
+        return yield* Effect.fail(`${manifestPath} has no name`);
+      }
+
+      if (Option.isSome(target.provisionWithJive)) {
+        yield* (yield* libraryModules.JiveServer).provisionPackage({
+          serverUrl: target.provisionWithJive.value.serverUrl,
+          registry: "npm",
+          packageName: name,
+        });
+      }
       yield* Effect.log(`Packing ${target.version}`);
       const tarballPath = yield* npm.pack(target.packageDir, target.outDir);
       yield* Effect.log(`Publishing ${target.version} under ${target.distTag}`);

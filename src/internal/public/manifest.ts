@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaTransformation } from "effect";
 
 /**
  * The shape a package.json must have to be built and published by this template.
@@ -152,6 +152,41 @@ const daemonsDescription =
   'Every `src/daemons/` entry, by file name without its extension, e.g. ["ozy-signing-agent"]. The build fails if this and the files disagree. Each installed copy of the package gets its own registration, so how many daemons run is decided by where the package is installed, not here.';
 
 /**
+ * Whether a server URL may be called: https anywhere, or plain http to this machine, where a local Convex
+ * backend serves without TLS.
+ */
+function serverUrlProblem(url: string): string | undefined {
+  if (!URL.canParse(url)) return `"${url}" is not an absolute URL`;
+  const { protocol, hostname } = new URL(url);
+  if (protocol === "https:") return undefined;
+  if (protocol === "http:" && (hostname === "localhost" || hostname === "127.0.0.1")) return undefined;
+  return `"${url}" must use https (plain http only to localhost or 127.0.0.1)`;
+}
+
+/**
+ * Where a package's deploy asks Jive to provision it on npm before publishing, or `null` to publish without
+ * asking, as every package did before this existed. The server is reached at its deployment URL; who the
+ * deploy job is comes from its GitHub OIDC token, so nothing here is a credential.
+ *
+ * Exported for other abstracts, whose `publishPackage` callers take the same value.
+ */
+const ProvisionWithJive = Schema.Struct({
+  // A description goes on before `check`: one set after it does not reach the generated JSON Schema.
+  serverUrl: Schema.NonEmptyString
+    .annotate({ description: 'The Jive server deployment\'s URL, e.g. "https://api.jive.sh".' })
+    .check(Schema.makeFilter(serverUrlProblem)),
+});
+export type ProvisionWithJive = Schema.Schema.Type<typeof ProvisionWithJive>;
+
+/**
+ * `Schema.OptionFromNullOr`, spelled out so the description sits on the nullable shape the JSON Schema is
+ * generated from; annotating the Option it decodes to never reaches the editor.
+ */
+export const ProvisionWithJiveSchema = Schema.NullOr(ProvisionWithJive).annotate({
+  description: 'null to publish to npm as before, or {"serverUrl": …} to have each deploy call the Jive server\'s packages.provision with the job\'s GitHub OIDC token right before publishing. The deploy fails, publishing nothing, if Jive refuses. Needs `id-token: write`, which the deploy job of Jive\'s reusable pipeline has.',
+}).pipe(Schema.decodeTo(Schema.Option(Schema.toType(ProvisionWithJive)), SchemaTransformation.optionFromNullOr()));
+
+/**
  * The `library` block — configuration owned by this template, as `cicd` is owned by the pipeline.
  *
  * `daemonNames` pins the rendered JSON Schema to exactly the daemons a package actually has: any order,
@@ -172,11 +207,13 @@ export function makeLibrarySchema(daemonNames: ReadonlyArray<string>): typeof Li
           maxItems: daemonNames.length,
         }),
       })),
+    provisionWithJive: ProvisionWithJiveSchema,
   }) as unknown as typeof LibrarySchema;
 }
 
 export const LibrarySchema = Schema.Struct({
   daemons: DaemonDeclarations.annotate({ description: daemonsDescription }),
+  provisionWithJive: ProvisionWithJiveSchema,
 });
 export type LibraryConfig = Schema.Schema.Type<typeof LibrarySchema>;
 

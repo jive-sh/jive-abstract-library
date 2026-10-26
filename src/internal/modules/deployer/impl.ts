@@ -1,7 +1,7 @@
 import { Clock, Effect, FileSystem, Option, Schema, pipe } from "effect";
 import { effunct, implementing, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
-import { isEnvironment, LOCAL_ENVIRONMENT } from "../../public/manifest";
+import { isEnvironment, LOCAL_ENVIRONMENT, type ProvisionWithJive } from "../../public/manifest";
 import { INSTALL_SCRIPT, LOCAL_ALIAS_SUFFIX, OUTDIR, REPAIR_ONLY_FLAG } from "../../common/constants";
 import type { DeployPlan } from "../../public/deploy-plan";
 import { libraryModules } from "../index";
@@ -27,7 +27,7 @@ interface PlatformPackage {
 }
 
 export class DeployerImpl extends implementing(libraryModules.Deployer)
-  .uses(libraryModules.OSPlatform, libraryModules.Npm, FileSystem.FileSystem)
+  .uses(libraryModules.OSPlatform, libraryModules.Npm, libraryModules.JiveServer, FileSystem.FileSystem)
   implements IDeployer {
 
   *plan({ environment, sourceCommitSha }: PlanInput): EffectGen<DeployPlan, string> {
@@ -39,7 +39,7 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     return yield* this.dependencies.Npm.planRelease({ name, version: stampedBase, registry });
   }
 
-  *deploy({ environment, sourceCommitSha, maybeJobSummaryPath }: DeployInput): EffectGen<void, string> {
+  *deploy({ environment, sourceCommitSha, maybeJobSummaryPath, provisionWithJive }: DeployInput): EffectGen<void, string> {
     const outDir = resolve(yield* this.dependencies.OSPlatform.getCurrentDirectory(), OUTDIR);
     const { name, version } = yield* this.readBuiltBase(outDir);
     const local = isEnvironment(environment, LOCAL_ENVIRONMENT);
@@ -77,7 +77,7 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
       yield* this.installLocally({ outDir, name, stampedBase, platformPackages });
       return;
     }
-    yield* this.publishRelease({ outDir, name, stampedBase, baseTag, platformPackages, maybeJobSummaryPath });
+    yield* this.publishRelease({ outDir, name, stampedBase, baseTag, platformPackages, maybeJobSummaryPath, provisionWithJive });
   }
 
   /**
@@ -85,13 +85,15 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
    * dependencies name their exact versions, so none of them may be missing once the base is
    * installable. npm accepts a publish minutes before it serves it, and serves a small base package
    * sooner than large platform packages, so the base is published only once every platform package
-   * downloads. Packing has no such ordering, so all of it happens at once.
+   * downloads. Packing has no such ordering, so all of it happens at once. When the package provisions
+   * with Jive, that comes after packing and before the first publish, so a refusal leaves nothing published.
    */
   private *publishRelease(input: {
     outDir: string; name: string; stampedBase: string; baseTag: string;
     platformPackages: ReadonlyArray<PlatformPackage>; maybeJobSummaryPath: Option.Option<string>;
+    provisionWithJive: Option.Option<ProvisionWithJive>;
   }): EffectGen<void, string> {
-    const { outDir, name, stampedBase, baseTag, platformPackages, maybeJobSummaryPath } = input;
+    const { outDir, name, stampedBase, baseTag, platformPackages, maybeJobSummaryPath, provisionWithJive } = input;
 
     const baseDir = resolve(outDir, BASE_PACKAGE_DIR);
     yield* this.updateManifest(baseDir, {
@@ -116,6 +118,10 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
       { concurrency: toPack.length },
     );
     const tarballOf = new Map(toPack.map((target, index) => [target.label, tarballs[index] as string]));
+
+    if (Option.isSome(provisionWithJive)) {
+      yield* this.dependencies.JiveServer.provisionPackage({ serverUrl: provisionWithJive.value.serverUrl, registry: "npm", packageName: name });
+    }
 
     // Platform packages publish under the base package's own name, told apart by version. The first
     // publish of a new name is a create, and the registry refuses concurrent creates of one name

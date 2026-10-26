@@ -13,6 +13,7 @@ export const build = makeCicdCommand(
       environment: LOCAL_ENVIRONMENT,
       sourceCommitSha: "",
       maybeJobSummaryPath: Option.none(),
+      provisionWithJive: Option.none(),
     });
     yield* Effect.log("Build complete");
   },

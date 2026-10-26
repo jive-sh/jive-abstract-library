@@ -10,6 +10,8 @@ import { libraryModules } from "../index";
 import { NpmImpl } from "../npm/impl";
 import { Availability } from "../npm/interface";
 import { OSPlatformImpl } from "../os-platform/impl";
+import { JiveServerImpl } from "../jive-server/impl";
+import type { ProvisionPackageInput } from "../jive-server/interface";
 import { DeployerImpl } from "./impl";
 import { parseReleaseDownloadTimes } from "./download-times";
 
@@ -26,6 +28,8 @@ function release(input: {
   publishConfig?: object;
   /** Specs (`<name>@<version>`) the fake registry already lists. */
   published?: ReadonlyArray<string>;
+  /** Jive's answer when asked to provision; absent means it accepts. */
+  provisionFailure?: string;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "deployer-test-"));
   const write = (folder: string, manifest: object) => {
@@ -63,7 +67,16 @@ function release(input: {
     },
   });
   const osPlatform = OSPlatformImpl.mockLayer({ *getCurrentDirectory() { return dir; } });
-  return { dir, events, registries, layer: pipe(DeployerImpl.Layer, Layer.provideMerge(npm), Layer.provideMerge(osPlatform), Layer.provideMerge(BunFileSystem.layer)) };
+  const jiveServer = JiveServerImpl.mockLayer({
+    *provisionPackage({ serverUrl, registry, packageName }: ProvisionPackageInput) {
+      events.push(`provision ${registry} ${packageName} at ${serverUrl}`);
+      if (input.provisionFailure !== undefined) return yield* Effect.fail(input.provisionFailure);
+    },
+  });
+  return {
+    dir, events, registries,
+    layer: pipe(DeployerImpl.Layer, Layer.provideMerge(npm), Layer.provideMerge(jiveServer), Layer.provideMerge(osPlatform), Layer.provideMerge(BunFileSystem.layer)),
+  };
 }
 
 /**
@@ -72,7 +85,12 @@ function release(input: {
  * fixture's folder, and its contents are returned. Each step first lets real time pass, so the deploy's file and process
  * work reaches its next sleep before the clock moves.
  */
-async function deploy(fixture: ReturnType<typeof release>, advanceSeconds: number, writeJobSummary = false) {
+async function deploy(
+  fixture: ReturnType<typeof release>,
+  advanceSeconds: number,
+  writeJobSummary = false,
+  provisionWithJive: Option.Option<{ serverUrl: string }> = Option.none(),
+) {
   const jobSummaryPath = join(fixture.dir, "job-summary.md");
   if (writeJobSummary) writeFileSync(jobSummaryPath, "Earlier step's summary\n");
   const logs: string[] = [];
@@ -84,6 +102,7 @@ async function deploy(fixture: ReturnType<typeof release>, advanceSeconds: numbe
           environment: "latest",
           sourceCommitSha: "abcdef1234",
           maybeJobSummaryPath: writeJobSummary ? Option.some(jobSummaryPath) : Option.none(),
+          provisionWithJive,
         });
       })()));
       for (let advanced = 0; advanced < advanceSeconds; advanced += 10) {
@@ -164,6 +183,36 @@ describe("publishing a release", () => {
     expect(Result.isSuccess(result)).toBe(true);
     expect(fixture.registries).toEqual([Option.some("https://registry.example/"), Option.some("https://registry.example/")]);
     expect(logs).toContain("Waiting for https://registry.example/ to serve all 2 platform packages before publishing the base package (checking every 10 seconds, for up to 15 minutes)");
+  });
+});
+
+describe("provisioning with Jive", () => {
+  const server = Option.some({ serverUrl: "https://jive.example" });
+
+  test("asks Jive once, after packing and before any package is published", async () => {
+    const fixture = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 0 } });
+    const { result } = await deploy(fixture, 10, false, server);
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(fixture.events.slice(0, 3)).toEqual([
+      `provision npm ${PKG} at https://jive.example`,
+      "publish darwin-arm64",
+      "publish linux-x64",
+    ]);
+    expect(fixture.events.filter((event) => event.startsWith("provision"))).toHaveLength(1);
+  });
+
+  test("publishes nothing when Jive refuses", async () => {
+    const fixture = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 0 }, provisionFailure: "Jive refused: not registered" });
+    const { result } = await deploy(fixture, 10, false, server);
+    expect(Result.isFailure(result) && result.failure).toBe("Jive refused: not registered");
+    expect(fixture.events.filter((event) => event.startsWith("publish"))).toEqual([]);
+  });
+
+  test("does not ask Jive when the package has not opted in", async () => {
+    const fixture = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 0 } });
+    const { result } = await deploy(fixture, 10);
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(fixture.events.filter((event) => event.startsWith("provision"))).toEqual([]);
   });
 });
 

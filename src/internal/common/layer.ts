@@ -6,10 +6,12 @@ import { DaemonImpl } from "../modules/daemon/impl";
 import { DeployerImpl } from "../modules/deployer/impl";
 import { GitImpl } from "../modules/git/impl";
 import { InstalledPackageImpl } from "../modules/installed-package/impl";
+import { JiveServerImpl } from "../modules/jive-server/impl";
 import { JsonSchemaImpl } from "../modules/json-schema/impl";
 import { NpmImpl } from "../modules/npm/impl";
 import { OSPlatformImpl } from "../modules/os-platform/impl";
 import { PackageImpl } from "../modules/package/impl";
+import { PipelineIdentityImpl } from "../modules/pipeline-identity/impl";
 
 /**
  * Every module this package owns, composed most-dependent first. Commands and daemons are small enough
@@ -17,6 +19,8 @@ import { PackageImpl } from "../modules/package/impl";
  */
 export const layerLive = pipe(
   DeployerImpl.Layer,
+  Layer.provideMerge(JiveServerImpl.Layer),
+  Layer.provideMerge(PipelineIdentityImpl.Layer),
   Layer.provideMerge(BuilderImpl.Layer),
   Layer.provideMerge(DaemonImpl.Layer),
   Layer.provideMerge(InstalledPackageImpl.Layer),

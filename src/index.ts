@@ -26,6 +26,7 @@ export {
   LibrarySchema,
   PREVIEW_ENVIRONMENT,
   PackageJsonSchema,
+  ProvisionWithJiveSchema,
   REQUIRED_SCRIPTS,
   RESERVED_ENVIRONMENTS,
   isEnvironment,
@@ -35,6 +36,7 @@ export {
   type CicdConfig,
   type LibraryConfig,
   type PackageJson,
+  type ProvisionWithJive,
 } from "./internal/public/manifest";
 
 export { loadPackageJson } from "./internal/public/package-json";

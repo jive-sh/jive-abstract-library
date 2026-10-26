@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { Effect, JsonSchema, Schema } from "effect";
+import { describe, expect, test } from "bun:test";
+import { Effect, JsonSchema, Option, Result, Schema } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,8 +33,8 @@ test("a package with no daemons gets a schema that accepts only an empty list", 
  * `src/daemons/` may not be present to read, so it must stay the looser shape — and one `PackageJson`
  * type has to describe both.
  */
-test("pinning the schema does not narrow what it decodes", () => {
-  const manifest = {
+function manifestWith(library: object) {
+  return {
     $schema: "./package.schema.json",
     name: "example",
     version: "0.1.0",
@@ -53,10 +53,13 @@ test("pinning the schema does not narrow what it decodes", () => {
         runsOnPullRequests: true,
         runsOn: "ubuntu-latest",
       },
-      library: { daemons: ["unlisted"] },
+      library,
     },
   };
+}
 
+test("pinning the schema does not narrow what it decodes", () => {
+  const manifest = manifestWith({ daemons: ["unlisted"], provisionWithJive: null });
   for (const schema of [PackageJsonSchema, makePackageJsonSchema(["alpha"])]) {
     expect(Schema.decodeUnknownSync(schema)(manifest).jive.library.daemons).toEqual(["unlisted"]);
   }
@@ -81,4 +84,36 @@ test("a package without src/daemons has no daemons rather than failing", async (
     discoverDaemonNames(rootDir).pipe(Effect.provide(BunFileSystem.layer)),
   );
   expect(names).toEqual([]);
+});
+
+describe("provisionWithJive", () => {
+  const decode = (provisionWithJive: unknown) =>
+    Schema.decodeUnknownResult(PackageJsonSchema)(manifestWith({ daemons: [], provisionWithJive }));
+
+  test("null decodes to none and encodes back to null", () => {
+    const decoded = Schema.decodeUnknownSync(PackageJsonSchema)(manifestWith({ daemons: [], provisionWithJive: null }));
+    expect(decoded.jive.library.provisionWithJive).toEqual(Option.none());
+    expect((Schema.encodeSync(PackageJsonSchema)(decoded) as any).jive.library.provisionWithJive).toBeNull();
+  });
+
+  test("a server decodes to some, over https or plain http to this machine", () => {
+    for (const serverUrl of ["https://api.jive.sh", "http://127.0.0.1:3210", "http://localhost:3210"]) {
+      const result = decode({ serverUrl });
+      expect(Result.isSuccess(result) && result.success.jive.library.provisionWithJive).toEqual(Option.some({ serverUrl }));
+    }
+  });
+
+  test("is required, and refuses a relative URL or plain http elsewhere", () => {
+    for (const provisionWithJive of [undefined, { serverUrl: "api.jive.sh" }, { serverUrl: "http://api.jive.sh" }]) {
+      expect(Result.isFailure(decode(provisionWithJive))).toBe(true);
+    }
+  });
+
+  test("the generated schema describes it, so an author can discover it", () => {
+    const document = JsonSchema.toDocumentDraft07(Schema.toJsonSchemaDocument(makePackageJsonSchema([])));
+    const node = (document.schema as any).properties.jive.properties.library;
+    expect(node.required).toContain("provisionWithJive");
+    expect(JSON.stringify(node.properties.provisionWithJive)).toContain("packages.provision");
+    expect(JSON.stringify(node.properties.provisionWithJive)).toContain("The Jive server deployment's URL");
+  });
 });

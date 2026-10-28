@@ -7,6 +7,7 @@ export interface SpawnProcessInput {
   readonly command: string;
   readonly args?: readonly string[];
   readonly cwd?: string;
+  /** The child's whole environment; when absent, this process's environment as it is now. */
   readonly env?: Record<string, string | undefined>;
   readonly stdin?: ProcessStdio;
   readonly stdout?: ProcessStdio;

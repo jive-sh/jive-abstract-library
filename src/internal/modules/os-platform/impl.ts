@@ -17,7 +17,8 @@ export class OSPlatformImpl extends implementing(libraryModules.OSPlatform) impl
       try: async () => {
         const proc = Bun.spawn([input.command, ...(input.args ?? [])], {
           cwd: input.cwd,
-          env: input.env,
+          // Bun's default is the environment this process started with, not what `process.env` holds now.
+          env: input.env ?? process.env,
           stdin: input.stdin ?? "ignore",
           stdout: input.stdout ?? "pipe",
           stderr: input.stderr ?? "pipe",

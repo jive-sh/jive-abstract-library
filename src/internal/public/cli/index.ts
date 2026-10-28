@@ -17,8 +17,9 @@
  *     }),
  *   }),
  * });
- * BunRuntime.runMain(pipe(Cli.run(jive, { version }), Effect.provide(AppLayer), Effect.provide(BunServices.layer)));
+ * BunRuntime.runMain(pipe(Cli.run(jive, { version }), Effect.provide(AppLayer), Effect.provide(Cli.terminalLogger), Effect.provide(BunServices.layer)));
  * ```
  */
 export { make, choose, command, flag, type Cli, type Choice, type Command, type CommandInput, type Errors, type FlagValues, type Services, type Group, type Node } from "./tree";
 export { run, CliError } from "./run";
+export { terminalLogger } from "../../common/logger";

@@ -5,7 +5,8 @@
  * package's own deploy script may need, the dev server, daemon registration, upgrades, and the pieces every
  * other abstract builds its own CLI from: `makeCicdCommandFactory` (the six hooks' input reading, output printing
  * and exit handling), `makeJivePackageJsonSchema` (the fields every Jive package has, plus that abstract's own block)
- * and `loadPackageJson`. An abstract imports these rather than restating them.
+ * and `loadPackageJson`. An abstract imports these rather than restating them. A package's own modules run host
+ * processes through `OSPlatform`, and a CLI built with `Cli` logs through `Cli.terminalLogger`.
  */
 
 export {
@@ -64,3 +65,5 @@ export { DAEMON_ID_PREFIX } from "./internal/common/constants";
 export type { DaemonRegistration, DaemonStatus, DaemonUnitKind } from "./internal/modules/daemon/interface";
 
 export * as Cli from "./internal/public/cli";
+
+export { OSPlatform, OSPlatformImpl, type IOSPlatform, type ProcessResult, type ProcessStdio, type SpawnProcessInput } from "./internal/public/os-platform";

@@ -2,7 +2,7 @@
   "$schema": "./package.schema.json",
   "license": "MIT",
   "name": "jive-abstract-library",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "peerDependencies": {
     "effect": "^4.0.0",

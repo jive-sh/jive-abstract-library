@@ -89,6 +89,10 @@ export class OSPlatformImpl extends implementing(libraryModules.OSPlatform) impl
     }
   }
 
+  *findExecutable(command: string): EffectGen<Option.Option<string>> {
+    return Option.fromNullishOr(yield* Effect.sync(() => Bun.which(command)));
+  }
+
   *getCurrentDirectory(): EffectGen<string> {
     return yield* Effect.sync(() => process.cwd());
   }

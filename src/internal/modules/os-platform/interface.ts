@@ -11,6 +11,8 @@ export interface SpawnProcessInput {
   readonly stdin?: ProcessStdio;
   readonly stdout?: ProcessStdio;
   readonly stderr?: ProcessStdio;
+  /** Kills the process after this many milliseconds; its exit code is then nonzero. */
+  readonly timeoutMs?: number;
 }
 
 /** A process run detached from this one, with this process's stdout and stderr. */

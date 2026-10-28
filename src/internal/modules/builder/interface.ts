@@ -34,4 +34,11 @@ export interface IBuilder {
    * stamped at the local environment's version. Turning those into a release is the deployer's job.
    */
   build(input: BuildInput): EffectGen<BuildResult, string>;
+  /**
+   * The package's commands built with `Cli`, found by running each `src/entrypoints/` command from source and
+   * asking what Tab offers at its root: one built with `Cli` lists `--setup-completion` and exits zero. Daemons
+   * are never run (running one starts it), and a command still running after 30 seconds is stopped and counted
+   * as not built with `Cli`. The build bakes the result into the launcher stubs.
+   */
+  listCompletionCommands(rootDir: string): EffectGen<ReadonlyArray<string>, string>;
 }

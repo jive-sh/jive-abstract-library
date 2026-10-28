@@ -8,7 +8,7 @@ import { effunct, type EffectGen } from "effective-modules";
 import { libraryModules, type LibraryModules } from "../index";
 import { OSPlatformImpl } from "../os-platform/impl";
 import { ShellCompletionImpl } from "./impl";
-import { MissingCompletion, type IShellCompletion } from "./interface";
+import type { IShellCompletion } from "./interface";
 import { completionScript } from "./scripts";
 
 /** Runs setUp or remove against a fresh, fake home with the given environment. */
@@ -28,7 +28,6 @@ function inHome(home: string, env: Record<string, string>, os = "linux") {
   return {
     setUp: (name = "jive") => run((module) => module.setUp(name)),
     remove: (name = "jive") => run((module) => module.remove(name)),
-    setUpIfMissing: (name = "jive") => run((module) => module.setUpIfMissing(name)),
   };
 }
 
@@ -96,28 +95,4 @@ describe("setting up and removing Tab completion", () => {
     expect(await inHome(home, { SHELL: "/bin/zsh" }).setUp("a b")).toEqual(Result.fail("'a b' is not a command name a shell can complete."));
   });
 
-  test("setting up when missing: only when missing, never after it was turned off, never for an unknown shell", async () => {
-    const home = freshHome();
-    writeFileSync(join(home, ".zshrc"), "export EDITOR=vim\n");
-    const { setUpIfMissing, setUp, remove } = inHome(home, { SHELL: "/bin/zsh" });
-    const files = { shell: "zsh", scriptPath: join(home, ".jive", "completions", "jive.zsh"), startupFile: Option.some(join(home, ".zshrc")) } as const;
-
-    expect(await setUpIfMissing()).toEqual(Result.succeed(MissingCompletion.SetUp({ files })));
-    const afterSetUp = readFileSync(join(home, ".zshrc"), "utf-8");
-    expect(await setUpIfMissing()).toEqual(Result.succeed(MissingCompletion.AlreadySetUp()));
-    expect(readFileSync(join(home, ".zshrc"), "utf-8")).toBe(afterSetUp);
-
-    // The line removed by hand while the script stays: missing again.
-    writeFileSync(join(home, ".zshrc"), "export EDITOR=vim\n");
-    expect(await setUpIfMissing()).toEqual(Result.succeed(MissingCompletion.SetUp({ files })));
-
-    await remove();
-    expect(await setUpIfMissing()).toEqual(Result.succeed(MissingCompletion.TurnedOff()));
-    expect(readFileSync(join(home, ".zshrc"), "utf-8")).toBe("export EDITOR=vim\n");
-    await setUp();
-    expect(await setUpIfMissing()).toEqual(Result.succeed(MissingCompletion.AlreadySetUp()));
-
-    expect(await inHome(freshHome(), { SHELL: "/usr/bin/nu" }).setUpIfMissing()).toEqual(Result.succeed(MissingCompletion.UnsupportedShell()));
-    expect(await inHome(freshHome(), {}).setUpIfMissing()).toEqual(Result.succeed(MissingCompletion.UnsupportedShell()));
-  });
 });

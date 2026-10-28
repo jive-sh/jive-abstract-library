@@ -13,7 +13,7 @@ import { OSPlatformImpl } from "../modules/os-platform/impl";
  *
  * This runs inside *other* packages' daemons, which are Bun-compiled single-file binaries — so the graph
  * reached from here is the graph bundled into them. The full layer pulls in the builder, and with it
- * `ejs` and `commander`, none of which a signing agent has any use for.
+ * `ejs`, which a signing agent has no use for.
  */
 const layer = pipe(
   DaemonImpl.Layer,

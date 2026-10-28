@@ -13,6 +13,7 @@
   
       // Bundler mode
       "moduleResolution": "bundler",
+      "resolveJsonModule": true,
       "allowImportingTsExtensions": true,
       "verbatimModuleSyntax": true,
       "noEmit": true,
@@ -28,8 +29,7 @@
       "noPropertyAccessFromIndexSignature": true
     },
     "include": [
-      "src/**/*.ts",
-      "scripts/**/*.ts"
+      "src/**/*.ts"
     ],
     "exclude": [
       "dist",

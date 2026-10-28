@@ -21,6 +21,7 @@ export class OSPlatformImpl extends implementing(libraryModules.OSPlatform) impl
           stdin: input.stdin ?? "ignore",
           stdout: input.stdout ?? "pipe",
           stderr: input.stderr ?? "pipe",
+          timeout: input.timeoutMs,
         });
         const [exitCode, stdout, stderr] = await Promise.all([
           proc.exited,

@@ -39,6 +39,15 @@ const PACKAGE_NAME = <%- json(packageName) %>;
 // Every src/daemons/ entry. The build refuses to produce a package where this disagrees with the files,
 // so it needs no checking here.
 const DAEMONS = <%- json(daemons) %>;
+// The commands built with Cli, found at build by asking each for Tab completion. Their launchers set
+// completion up in the user's shell when it is missing.
+const COMPLETION_COMMANDS = <%- json(completionCommands) %>;
+// Where each shell's completion lives: the same object the command's own --setup-completion writes by.
+const COMPLETION_LOCATIONS = <%- json(completionLocations) %>;
+// A first argument that is Tab itself, or the user turning completion on or off, is left alone.
+const COMPLETION_SKIP_FLAGS = <%- json(completionSkipFlags) %>;
+const SET_UP_COMPLETION_FLAG = <%- json(setUpCompletionFlag) %>;
+const REMOVE_COMPLETION_FLAG = <%- json(removeCompletionFlag) %>;
 const DAEMON_ID_PREFIX = <%- json(daemonIdPrefix) %>;
 const DAEMON_HOME_DIR = <%- json(daemonHomeDir) %>;
 const DAEMON_REGISTRY_SUBDIR = <%- json(daemonRegistrySubdir) %>;
@@ -193,6 +202,64 @@ function removeInstallScript() {
   } catch {
     // Cleanup is best-effort; failing to remove install.cjs should not fail package installation.
   }
+}
+
+/* ------------------------------------------------------------------ Tab completion ---------- */
+
+function forCommand(template, command) {
+  return template.replace("{command}", command);
+}
+
+function readIfPresent(path) {
+  try {
+    return readFileSync(path, "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Where a command's completion for the user's shell (the one SHELL names) is loaded from, or undefined
+ * for a shell there is none for. The same rules ShellCompletion locates files by, read from the same data;
+ * a test compares the two.
+ */
+function completionLocation(command) {
+  const shell = basename(process.env.SHELL || "");
+  if (!COMPLETION_LOCATIONS.shells.includes(shell)) return undefined;
+  const home = homedir();
+  if (shell === "fish") {
+    const fish = COMPLETION_LOCATIONS.fish;
+    const configHome = process.env[fish.configHomeEnv] || join(home, fish.defaultConfigHome);
+    return { scriptPath: join(configHome, ...fish.completionsDir, \`\${command}.fish\`), startupFile: undefined };
+  }
+  const startupFile = shell === "bash"
+    ? join(home, COMPLETION_LOCATIONS.bash.startupFileByPlatform[process.platform] || COMPLETION_LOCATIONS.bash.defaultStartupFile)
+    : join(process.env[COMPLETION_LOCATIONS.zsh.startupDirectoryEnv] || home, COMPLETION_LOCATIONS.zsh.startupFile);
+  return { scriptPath: join(home, ...COMPLETION_LOCATIONS.jiveCompletionsDir, \`\${command}.\${shell}\`), startupFile };
+}
+
+/**
+ * Runs where the launcher runs: in install.cjs after npm installs the package, and at the first launch after an
+ * install or upgrade (after it, the command is the binary itself). So a startup-file line deleted by hand comes
+ * back at the next upgrade, unless completion was turned off with the command's own flag.
+ *
+ * Sets up Tab completion for a command built with Cli when the user's shell does not load it yet, saying so
+ * on stderr: stdout may be what the command's caller is reading. Not on a build agent, not when the user
+ * turned completion off with the command's own flag, and not for a shell there is no completion for.
+ */
+function setUpMissingCompletion(command) {
+  if (!COMPLETION_COMMANDS.includes(command) || process.env.CI) return;
+  const location = completionLocation(command);
+  if (location === undefined) return;
+  const turnedOff = join(homedir(), ...COMPLETION_LOCATIONS.jiveCompletionsDir, forCommand(COMPLETION_LOCATIONS.turnedOffFile, command));
+  if (existsSync(turnedOff)) return;
+  const loaded = location.startupFile === undefined
+    || readIfPresent(location.startupFile).includes(forCommand(COMPLETION_LOCATIONS.blockStart, command));
+  if (loaded && existsSync(location.scriptPath)) return;
+
+  console.error(\`Setting up Tab completion for \${command} in \${location.startupFile || location.scriptPath} (turn it off with: \${command} \${REMOVE_COMPLETION_FLAG})\`);
+  const result = spawnSync(commandTargetPath(command), [SET_UP_COMPLETION_FLAG], { stdio: ["ignore", "ignore", "inherit"] });
+  if (result.error) console.error(\`  could not run \${command} \${SET_UP_COMPLETION_FLAG}: \${result.error.message}\`);
 }
 
 /* ------------------------------------------------------------------ daemon registration ---------- */
@@ -557,8 +624,11 @@ function registerDaemons() {
 repairCommandTargets();
 registerDaemons();
 removeInstallScript();
-if (!IS_INSTALL_SCRIPT) {
+if (IS_INSTALL_SCRIPT) {
+  if (!process.argv.includes(REPAIR_ONLY_FLAG)) COMPLETION_COMMANDS.forEach(setUpMissingCompletion);
+} else {
   const commandName = basename(launcherPath);
+  if (!COMPLETION_SKIP_FLAGS.includes(process.argv[2])) setUpMissingCompletion(commandName);
   runExecutable(commandTargetPath(commandName));
 }
 `;

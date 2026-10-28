@@ -1,5 +1,6 @@
 import { Option } from "effect";
 import type { Shell } from "./interface";
+import { COMPLETION_LOCATIONS, forCommand } from "./locations";
 
 /**
  * The completion script each shell loads for one command. All three do the same thing on Tab: call the command
@@ -63,8 +64,8 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-const blockStart = (commandName: string) => `# begin ${commandName} completion\n`;
-const blockEnd = (commandName: string) => `# end ${commandName} completion\n`;
+const blockStart = (commandName: string) => `${forCommand(COMPLETION_LOCATIONS.blockStart, commandName)}\n`;
+const blockEnd = (commandName: string) => `${forCommand(COMPLETION_LOCATIONS.blockEnd, commandName)}\n`;
 
 /**
  * The lines a bash or zsh startup file gets: load the script if it is there, so a script deleted by hand
@@ -83,10 +84,6 @@ export function withStartupBlock(content: string, commandName: string, block: st
   }
   const separator = content === "" ? "" : content.endsWith("\n") ? "\n" : "\n\n";
   return `${content}${separator}${block}`;
-}
-
-export function hasStartupBlock(content: string, commandName: string): boolean {
-  return Option.isSome(findStartupBlock(content, commandName));
 }
 
 /** The startup file's text without the command's block, and the blank line `withStartupBlock` put before it. */

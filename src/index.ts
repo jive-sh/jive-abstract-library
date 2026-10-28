@@ -43,7 +43,7 @@ export { loadPackageJson } from "./internal/public/package-json";
 
 export { DeployPlan } from "./internal/public/deploy-plan";
 
-export { makeCicdCommandFactory, type CicdCommandFactory } from "./internal/common/command";
+export { makeCicdCommandFactory, type CicdCommand, type CicdCommandFactory } from "./internal/common/command";
 export type { PipelineContext } from "./internal/common/pipeline-context";
 
 export { discoverDaemonNames, packageRootDir } from "./internal/public/daemons";

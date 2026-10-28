@@ -1,14 +1,12 @@
 import { Effect, FileSystem, Option, Result, pipe } from "effect";
 import { implementing, type EffectGen } from "effective-modules";
 import { basename, dirname, join } from "node:path";
-import { DAEMON_HOME_DIR } from "../../common/constants";
 import { libraryModules } from "../index";
-import { MissingCompletion, type CompletionFiles, type IShellCompletion, type Shell } from "./interface";
-import { completionScript, hasStartupBlock, startupBlock, withStartupBlock, withoutStartupBlock } from "./scripts";
+import type { CompletionFiles, IShellCompletion, Shell } from "./interface";
+import { COMPLETION_LOCATIONS, forCommand } from "./locations";
+import { completionScript, startupBlock, withStartupBlock, withoutStartupBlock } from "./scripts";
 
-const SHELLS: ReadonlyArray<Shell> = ["bash", "zsh", "fish"];
-/** Under the Jive home directory, beside daemons and logs. Fish's scripts go in fish's own directory instead. */
-const COMPLETIONS_SUBDIR = "completions";
+const SHELLS: ReadonlyArray<Shell> = COMPLETION_LOCATIONS.shells;
 
 export class ShellCompletionImpl extends implementing(libraryModules.ShellCompletion)
   .uses(libraryModules.OSPlatform, FileSystem.FileSystem)
@@ -62,23 +60,10 @@ export class ShellCompletionImpl extends implementing(libraryModules.ShellComple
     return files;
   }
 
-  *setUpIfMissing(commandName: string): EffectGen<MissingCompletion, string> {
-    if (Result.isFailure(yield* this.userShell())) return MissingCompletion.UnsupportedShell();
-    const fs = this.getDependency(FileSystem.FileSystem);
-    const exists = (path: string) => pipe(fs.exists(path), Effect.mapError((e) => `Could not read ${path}: ${e.message}`));
-    if (yield* exists(yield* this.turnedOffMarker(commandName))) return MissingCompletion.TurnedOff();
-
-    const files = yield* this.locate(commandName);
-    const startupLoadsIt = Option.isNone(files.startupFile)
-      || hasStartupBlock(yield* this.readIfPresent(files.startupFile.value), commandName);
-    if ((yield* exists(files.scriptPath)) && startupLoadsIt) return MissingCompletion.AlreadySetUp();
-    return MissingCompletion.SetUp({ files: yield* this.setUp(commandName) });
-  }
-
   /** Present while completion is turned off; under the Jive home, whichever the shell. */
   private *turnedOffMarker(commandName: string): EffectGen<string> {
     const home = yield* this.dependencies.OSPlatform.getHomeDirectory();
-    return join(home, DAEMON_HOME_DIR, COMPLETIONS_SUBDIR, `${commandName}.off`);
+    return join(home, ...COMPLETION_LOCATIONS.jiveCompletionsDir, forCommand(COMPLETION_LOCATIONS.turnedOffFile, commandName));
   }
 
   /** The shell `SHELL` names, or why there is none to complete for. */
@@ -103,21 +88,24 @@ export class ShellCompletionImpl extends implementing(libraryModules.ShellComple
     const shell = maybeShell.success;
 
     const home = yield* os.getHomeDirectory();
-    const jiveScript = join(home, DAEMON_HOME_DIR, COMPLETIONS_SUBDIR, `${commandName}.${shell}`);
+    const jiveScript = join(home, ...COMPLETION_LOCATIONS.jiveCompletionsDir, `${commandName}.${shell}`);
     switch (shell) {
       case "bash": {
-        // macOS terminals start login shells, which read .bash_profile and not .bashrc.
+        const { bash } = COMPLETION_LOCATIONS;
         const { os: platform } = yield* os.getCurrentPlatform();
-        const startupFile = join(home, platform === "darwin" ? ".bash_profile" : ".bashrc");
+        const platformFile = bash.startupFileByPlatform[platform];
+        const startupFile = join(home, platformFile !== undefined ? platformFile : bash.defaultStartupFile);
         return { shell, scriptPath: jiveScript, startupFile: Option.some(startupFile) };
       }
       case "zsh": {
-        const zdotdir = Option.getOrElse(yield* os.readEnv("ZDOTDIR"), () => home);
-        return { shell, scriptPath: jiveScript, startupFile: Option.some(join(zdotdir, ".zshrc")) };
+        const { zsh } = COMPLETION_LOCATIONS;
+        const directory = Option.getOrElse(yield* os.readEnv(zsh.startupDirectoryEnv), () => home);
+        return { shell, scriptPath: jiveScript, startupFile: Option.some(join(directory, zsh.startupFile)) };
       }
       case "fish": {
-        const configHome = Option.getOrElse(yield* os.readEnv("XDG_CONFIG_HOME"), () => join(home, ".config"));
-        return { shell, scriptPath: join(configHome, "fish", "completions", `${commandName}.fish`), startupFile: Option.none() };
+        const { fish } = COMPLETION_LOCATIONS;
+        const configHome = Option.getOrElse(yield* os.readEnv(fish.configHomeEnv), () => join(home, fish.defaultConfigHome));
+        return { shell, scriptPath: join(configHome, ...fish.completionsDir, `${commandName}.fish`), startupFile: Option.none() };
       }
     }
   }

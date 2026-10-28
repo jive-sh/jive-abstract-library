@@ -22,6 +22,8 @@ import {
 } from "../../common/constants";
 import { editJsonc, insertAfter } from "../../common/jsonc";
 import { COMMAND_LAUNCHER_TEMPLATE } from "../../common/command-launcher";
+import { COMPGEN_FLAG, REMOVE_COMPLETION_FLAG, SET_UP_COMPLETION_FLAG } from "../../public/cli/parse";
+import { COMPLETION_LOCATIONS } from "../shell-completion/locations";
 import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS, type BuildInput, type BuildResult, type IBuilder, type Platform } from "./interface";
 import { LOCAL_ENVIRONMENT } from "../../public/manifest";
@@ -43,6 +45,7 @@ const COMMAND_SOURCE_DIRS = [ENTRYPOINT_SOURCE_DIR, DAEMON_SOURCE_DIR] as const;
 const SOURCE_ENTRYPOINT = "src/index.ts";
 const EMITTED_ENTRYPOINT = "index.js";
 const SOURCE_SUFFIX = ".ts";
+const COMPLETION_PROBE_TIMEOUT_MS = 30_000;
 const TEST_SUFFIXES = [".test.ts", ".test.js", ".test.js.map"] as const;
 const BASE_PACKAGE_ROOT_FILES = [README_FILE, LICENSE_FILE] as const;
 const TSCONFIG_INCLUDE = ["src/**/*.ts"];
@@ -63,6 +66,11 @@ interface BuildContext {
   readonly commandSources: ReadonlyArray<CommandSource>;
   /** Daemon entries found in src/daemons/, which the manifest must list exactly. */
   readonly daemons: ReadonlyArray<string>;
+  /**
+   * The commands built with `Cli` from this library, found by asking each one for Tab completion; their
+   * launcher stubs set up completion in the user's shell when it is missing.
+   */
+  readonly completionCommands: ReadonlyArray<string>;
   readonly rootFiles: ReadonlyArray<string>;
   readonly hasSourceEntrypoint: boolean;
   readonly platforms: ReadonlyArray<Platform>;
@@ -115,10 +123,12 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     const commandSources = yield* this.collectCommandSources(rootDir);
     const daemons = yield* this.resolveDaemons(rootDir, packageJson);
     const outDir = resolve(rootDir, OUTDIR);
+    const completionCommands = yield* this.listCompletionCommands(rootDir);
 
     return {
       rootDir,
       daemons,
+      completionCommands,
       outDir,
       workDir: resolve(outDir, WORKDIR),
       packageJson,
@@ -158,6 +168,25 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     }
 
     return [...commands.values()].sort((a, b) => a.command.localeCompare(b.command));
+  }
+
+  *listCompletionCommands(rootDir: string): EffectGen<ReadonlyArray<string>, string> {
+    const entrypointDir = resolve(rootDir, ENTRYPOINT_SOURCE_DIR);
+    const found: Array<string> = [];
+    for (const { command, sourcePath } of yield* this.collectCommandSources(rootDir)) {
+      if (dirname(sourcePath) !== entrypointDir) continue;
+      const result = yield* this.dependencies.OSPlatform.spawnProcess({
+        command: "bun",
+        args: [sourcePath, COMPGEN_FLAG, "--"],
+        cwd: rootDir,
+        timeoutMs: COMPLETION_PROBE_TIMEOUT_MS,
+      });
+      if (result.exitCode === 0 && result.stdout.split("\n").includes(SET_UP_COMPLETION_FLAG)) found.push(command);
+    }
+    yield* Effect.log(found.length === 0
+      ? "Tab completion: no command is built with Cli"
+      : `Tab completion: ${found.join(", ")} set it up from their launchers`);
+    return found;
   }
 
   private *collectRootFiles(rootDir: string): EffectGen<ReadonlyArray<string>, string> {
@@ -439,6 +468,11 @@ function* renderLauncher(context: BuildContext, template: string, isInstallScrip
       commandNames: context.commandSources.map(({ command }) => command),
       packageName: context.packageJson.name,
       daemons: context.daemons,
+      completionCommands: context.completionCommands,
+      completionLocations: COMPLETION_LOCATIONS,
+      completionSkipFlags: [COMPGEN_FLAG, SET_UP_COMPLETION_FLAG, REMOVE_COMPLETION_FLAG],
+      setUpCompletionFlag: SET_UP_COMPLETION_FLAG,
+      removeCompletionFlag: REMOVE_COMPLETION_FLAG,
       daemonIdPrefix: DAEMON_ID_PREFIX,
       daemonHomeDir: DAEMON_HOME_DIR,
       daemonRegistrySubdir: DAEMON_REGISTRY_SUBDIR,

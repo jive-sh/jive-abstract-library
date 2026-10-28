@@ -62,3 +62,5 @@ export { autoUpgrade, type AutoUpgradeOptions } from "./internal/public/auto-upg
 
 export { DAEMON_ID_PREFIX } from "./internal/common/constants";
 export type { DaemonRegistration, DaemonStatus, DaemonUnitKind } from "./internal/modules/daemon/interface";
+
+export * as Cli from "./internal/public/cli";

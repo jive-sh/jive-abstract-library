@@ -12,6 +12,7 @@ import { NpmImpl } from "../modules/npm/impl";
 import { OSPlatformImpl } from "../modules/os-platform/impl";
 import { PackageImpl } from "../modules/package/impl";
 import { PipelineIdentityImpl } from "../modules/pipeline-identity/impl";
+import { ShellCompletionImpl } from "../modules/shell-completion/impl";
 
 /**
  * Every module this package owns, composed most-dependent first. Commands and daemons are small enough
@@ -22,6 +23,7 @@ export const layerLive = pipe(
   Layer.provideMerge(JiveServerImpl.Layer),
   Layer.provideMerge(PipelineIdentityImpl.Layer),
   Layer.provideMerge(BuilderImpl.Layer),
+  Layer.provideMerge(ShellCompletionImpl.Layer),
   Layer.provideMerge(DaemonImpl.Layer),
   Layer.provideMerge(InstalledPackageImpl.Layer),
   Layer.provideMerge(NpmImpl.Layer),

@@ -63,6 +63,17 @@ const githubEnv: Record<string, string> = {
   ACTIONS_ID_TOKEN_REQUEST_TOKEN: REQUEST_TOKEN,
 };
 
+/** Resolves once `condition` holds, checking every 2 ms of real time; rejects after 5 seconds. */
+async function waitUntil(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for the provision call");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  // The sleep starts in the same fiber run as the log line before it; let that run finish.
+  await new Promise((resolve) => setTimeout(resolve, 2));
+}
+
 /**
  * Provisions `PACKAGE` with `env` as the job's environment, moving the clock on 10 seconds at a time up to
  * `advanceSeconds`; returns the outcome and every log line.
@@ -82,11 +93,19 @@ async function provision(input: { env?: Record<string, string>; advanceSeconds?:
   );
   const result = await Effect.runPromise(pipe(
     Effect.gen(function* () {
-      const fiber = yield* Effect.forkChild(Effect.result(effunct(function* () {
-        yield* (yield* libraryModules.JiveServer).provisionPackage({ serverUrl: SERVER_URL, registry: "npm", packageName: PACKAGE });
-      })()));
-      for (let advanced = 0; advanced < (input.advanceSeconds ?? 0); advanced += 10) {
-        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20)));
+      let finished = false;
+      const fiber = yield* Effect.forkChild(pipe(
+        Effect.result(effunct(function* () {
+          yield* (yield* libraryModules.JiveServer).provisionPackage({ serverUrl: SERVER_URL, registry: "npm", packageName: PACKAGE });
+        })()),
+        Effect.ensuring(Effect.sync(() => { finished = true; })),
+      ));
+      // The clock moves only once the call is asleep (it logs "asking again" just before sleeping) or over:
+      // moving it while a real request is in flight would start the next sleep from the moved time and skip a poll.
+      const asleepTimes = () => logs.filter((line) => line.includes("asking again")).length;
+      for (let step = 0; step * 10 < (input.advanceSeconds ?? 0); step++) {
+        yield* Effect.promise(() => waitUntil(() => finished || asleepTimes() > step));
+        if (finished) break;
         yield* TestClock.adjust(Duration.seconds(10));
       }
       return yield* Fiber.join(fiber);

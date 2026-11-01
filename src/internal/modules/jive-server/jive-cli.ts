@@ -7,14 +7,13 @@ import type { IJiveServer, ProvisionPackageInput } from "./interface";
 
 /**
  * Which way a deploy provisions its package (Alex, 2026-11-01: "We have a deploy hook in CI. That should do a `jive
- * login --cicd` then `jive provision` for a given resource"). `false` keeps the direct `packages:provision` call
- * until `@jive-sh/server` deploys its `provision`; flipping it to `true`, and releasing, moves every deploy onto the
- * jive CLI.
+ * login --cicd` then `jive provision` for a given resource"). `true` since `@jive-sh/server` 0.6.0 deployed `provision`: every deploy provisions through the jive CLI.
+ * `false` would go back to calling `packages:provision` directly, which is removed next.
  */
-export const PROVISION_THROUGH_JIVE_CLI = false;
+export const PROVISION_THROUGH_JIVE_CLI = true;
 
 /** The jive CLI the deploy runs, by exact version so a release of jive never changes a deploy by itself. */
-export const JIVE_CLI_PACKAGE = "@jive-sh/jive@0.4.0";
+export const JIVE_CLI_PACKAGE = "@jive-sh/jive@0.4.1";
 
 /** A package registry is the `connector-package-registry` kind; the organization's configuration picks npm. */
 const PACKAGE_REGISTRY_KIND = "connector-package-registry";

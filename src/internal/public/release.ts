@@ -6,7 +6,7 @@ import type { DeployPlan } from "./deploy-plan";
 import type { ProvisionWithJive } from "./manifest";
 import { resolve } from "node:path";
 import { libraryModules } from "../modules";
-import { JiveServerImpl } from "../modules/jive-server/impl";
+import { provisioningLayer } from "../modules/jive-server/jive-cli";
 import { NpmImpl } from "../modules/npm/impl";
 import { OSPlatformImpl } from "../modules/os-platform/impl";
 import { PipelineIdentityImpl } from "../modules/pipeline-identity/impl";
@@ -19,7 +19,7 @@ import { baseDistTag, baseVersion } from "../modules/deployer/versions";
  */
 
 const layer = pipe(
-  JiveServerImpl.Layer,
+  provisioningLayer,
   Layer.provideMerge(PipelineIdentityImpl.Layer),
   Layer.provideMerge(NpmImpl.Layer),
   Layer.provideMerge(OSPlatformImpl.Layer),

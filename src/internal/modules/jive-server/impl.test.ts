@@ -11,17 +11,21 @@ import { JIVE_API_AUDIENCE, JiveServerImpl } from "./impl";
 /**
  * Runs the real JiveServer and PipelineIdentity modules against two fakes this process serves: GitHub's ID
  * token endpoint, which hands out a new token per request, and a Convex deployment's `/api/action`, which
- * answers `packages:provision` with whatever each test queues.
+ * answers `pipelineSessions:signIn` with a session token (or `signInAnswer`) and `packages:provision` with whatever
+ * each test queues.
  */
 
 const REQUEST_TOKEN = "github-request-token";
 const PACKAGE = "@test/demo";
+const SESSION_TOKEN = "jive_pipeline-session-1";
 
 let issued: string[] = [];
 let tokenRequests: Array<{ audience: string | null; authorization: string | null; apiVersion: string | null }> = [];
 let actionCalls: Array<{ authorization: string | null; body: any }> = [];
-/** Answers of `/api/action`, in order; the last repeats. */
+/** Answers of `packages:provision`, in order; the last repeats. */
 let answers: Array<{ status: number; body: string }> = [];
+/** The answer of `pipelineSessions:signIn`. */
+let signInAnswer: { status: number; body: string };
 
 const fake = Bun.serve({
   hostname: "127.0.0.1",
@@ -39,8 +43,10 @@ const fake = Bun.serve({
       return Response.json({ count: 1, value: token });
     }
     if (url.pathname === "/api/action" && request.method === "POST") {
-      actionCalls.push({ authorization: request.headers.get("authorization"), body: await request.json() });
-      const answer = answers[Math.min(actionCalls.length, answers.length) - 1]!;
+      const body = await request.json() as { path: string };
+      actionCalls.push({ authorization: request.headers.get("authorization"), body });
+      const provisionCalls = actionCalls.filter((call) => call.body.path === "packages:provision").length;
+      const answer = body.path === "pipelineSessions:signIn" ? signInAnswer : answers[Math.min(provisionCalls, answers.length) - 1]!;
       return new Response(answer.body, { status: answer.status, headers: { "content-type": "application/json" } });
     }
     return new Response("not found", { status: 404 });
@@ -56,6 +62,7 @@ beforeEach(() => {
   tokenRequests = [];
   actionCalls = [];
   answers = [];
+  signInAnswer = success({ status: "signedIn", sessionToken: SESSION_TOKEN, expiresAt: 1_800_000_000_000 });
 });
 
 const githubEnv: Record<string, string> = {
@@ -117,27 +124,33 @@ async function provision(input: { env?: Record<string, string>; advanceSeconds?:
   return { result, logs };
 }
 
+/** The calls of one function, by its Convex path. */
+const callsOf = (path: string) => actionCalls.filter((call) => call.body.path === path);
+
+const provisionCall = { authorization: null, body: { path: "packages:provision", args: { sessionToken: SESSION_TOKEN, registry: "npm", packageName: PACKAGE }, format: "json" } };
+
 describe("provisionPackage", () => {
-  test("calls packages:provision with a token GitHub minted for Jive's audience, and succeeds when ready", async () => {
+  test("signs the job in with a token GitHub minted for Jive's audience, then calls packages:provision with the session, and succeeds when ready", async () => {
     answers = [success({ status: "ready" })];
     const { result, logs } = await provision();
     expect(Result.isSuccess(result)).toBe(true);
     expect(tokenRequests).toEqual([{ audience: JIVE_API_AUDIENCE, authorization: `Bearer ${REQUEST_TOKEN}`, apiVersion: "2.0" }]);
-    expect(actionCalls).toEqual([{
-      authorization: "Bearer id-token-1",
-      body: { path: "packages:provision", args: { registry: "npm", packageName: PACKAGE }, format: "json" },
-    }]);
+    expect(actionCalls).toEqual([
+      { authorization: "Bearer id-token-1", body: { path: "pipelineSessions:signIn", args: {}, format: "json" } },
+      provisionCall,
+    ]);
     expect(logs).toEqual([
       `Asking Jive at ${SERVER_URL} to provision the npm package ${PACKAGE}`,
       `Jive provisioned the npm package ${PACKAGE}; it is ready to publish`,
     ]);
   });
 
-  test("while another deploy holds the package, asks again every 10 seconds with a fresh token", async () => {
+  test("while another deploy holds the package, asks again every 10 seconds with the same session", async () => {
     answers = [success({ status: "inProgress" }), success({ status: "inProgress" }), success({ status: "ready" })];
     const { result, logs } = await provision({ advanceSeconds: 30 });
     expect(Result.isSuccess(result)).toBe(true);
-    expect(actionCalls.map((call) => call.authorization)).toEqual(["Bearer id-token-1", "Bearer id-token-2", "Bearer id-token-3"]);
+    expect(callsOf("pipelineSessions:signIn")).toHaveLength(1);
+    expect(callsOf("packages:provision")).toEqual([provisionCall, provisionCall, provisionCall]);
     expect(logs).toContain(`  Another deploy is provisioning the npm package ${PACKAGE} (after 10s); asking again in 10 seconds`);
   });
 
@@ -148,29 +161,45 @@ describe("provisionPackage", () => {
       `After 10 minutes another deploy is still provisioning the npm package ${PACKAGE}, so nothing was published`,
     );
     // Asked at 0, 10, …, 600 seconds.
-    expect(actionCalls).toHaveLength(61);
+    expect(callsOf("packages:provision")).toHaveLength(61);
   });
 
-  test("fails with Jive's reason when it refuses", async () => {
-    answers = [success({ status: "refused", reason: "jive-sh/demo is not a registered code repository" })];
+  test("fails with Jive's reason when it refuses to sign the job in, without asking to provision", async () => {
+    signInAnswer = success({ status: "refused", reason: "jive-sh/demo (id 1) is not a code repository registered with Jive" });
     const { result } = await provision();
     expect(Result.isFailure(result) && result.failure).toBe(
-      `Jive refused to provision the npm package ${PACKAGE}, so nothing was published: jive-sh/demo is not a registered code repository`,
+      "Jive refused to sign this deploy job in, so nothing was published: jive-sh/demo (id 1) is not a code repository registered with Jive",
+    );
+    expect(callsOf("packages:provision")).toEqual([]);
+  });
+
+  test("fails with Jive's reason when it refuses to provision", async () => {
+    answers = [success({ status: "refused", reason: "@test/demo is provisioned for another code repository" })];
+    const { result } = await provision();
+    expect(Result.isFailure(result) && result.failure).toBe(
+      `Jive refused to provision the npm package ${PACKAGE}, so nothing was published: @test/demo is provisioned for another code repository`,
     );
   });
 
-  test("fails with Convex's error when the function fails", async () => {
-    answers = [{ status: 500, body: JSON.stringify({ status: "error", errorMessage: "Uncaught Error: Not authenticated", logLines: [] }) }];
-    const { result } = await provision();
-    expect(Result.isFailure(result) && result.failure).toBe(
-      `Jive could not provision the npm package ${PACKAGE}, so nothing was published: Uncaught Error: Not authenticated`,
-    );
+  test("fails with Convex's error when a function fails", async () => {
+    signInAnswer = { status: 500, body: JSON.stringify({ status: "error", errorMessage: "Uncaught Error: Not authenticated", logLines: [] }) };
+    expect((await provision()).result).toEqual(Result.fail("Jive could not sign this deploy job in, so nothing was published: Uncaught Error: Not authenticated"));
+
+    signInAnswer = success({ status: "signedIn", sessionToken: SESSION_TOKEN, expiresAt: 1_800_000_000_000 });
+    answers = [{ status: 500, body: JSON.stringify({ status: "error", errorMessage: "Uncaught Error: Server Error", logLines: [] }) }];
+    expect((await provision()).result).toEqual(Result.fail(`Jive could not provision the npm package ${PACKAGE}, so nothing was published: Uncaught Error: Server Error`));
   });
 
   test("fails, naming the answer, when the server's answer is not Convex's", async () => {
-    answers = [{ status: 502, body: "Bad Gateway" }];
+    signInAnswer = { status: 502, body: "Bad Gateway" };
     const { result } = await provision();
-    expect(Result.isFailure(result) && result.failure).toContain(`Cannot call packages:provision at ${SERVER_URL}: it answered 502 with an unexpected body`);
+    expect(Result.isFailure(result) && result.failure).toContain(`Cannot call pipelineSessions:signIn at ${SERVER_URL}: it answered 502 with an unexpected body`);
+  });
+
+  test("fails without quoting it when a function's value is not what this version reads", async () => {
+    signInAnswer = success({ status: "signedIn", sessionToken: SESSION_TOKEN, expiresAt: "later" });
+    const { result } = await provision();
+    expect(result).toEqual(Result.fail(`Cannot call pipelineSessions:signIn at ${SERVER_URL}: it answered a value this version of jive-abstract-library does not read; the server may be newer`));
   });
 
   test("fails without calling anything when the job may not request an ID token", async () => {
@@ -185,6 +214,6 @@ describe("provisionPackage", () => {
     const { result, logs } = await provision({ advanceSeconds: 10 });
     const reported = [...logs, Result.isFailure(result) ? result.failure : ""].join("\n");
     expect(issued.length).toBeGreaterThan(0);
-    for (const secret of [...issued, REQUEST_TOKEN]) expect(reported).not.toContain(secret);
+    for (const secret of [...issued, REQUEST_TOKEN, SESSION_TOKEN]) expect(reported).not.toContain(secret);
   });
 });

@@ -6,8 +6,8 @@ import { Effect, Option, Result } from "effect";
 import { publishPackage } from "./release";
 
 /**
- * publishPackage against a fake GitHub token endpoint and a fake Jive server that refuses: the refusal must
- * stop it before anything is packed or published. The GitHub variables are set on this process because
+ * publishPackage against a fake GitHub token endpoint and a fake Jive server that signs the job in and refuses to
+ * provision: the refusal must stop it before anything is packed or published. The GitHub variables are set on this process because
  * publishPackage composes its own layer, as every abstract calling it does.
  */
 
@@ -17,7 +17,7 @@ let registryRequests = 0;
 const fake = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
-  fetch(request) {
+  async fetch(request) {
     const { pathname } = new URL(request.url);
     if (pathname === "/token") return Response.json({ value: "id-token" });
     if (pathname !== "/api/action") {
@@ -25,7 +25,11 @@ const fake = Bun.serve({
       return new Response("refused by the test", { status: 403 });
     }
     actionCalls += 1;
-    return Response.json({ status: "success", value: { status: "refused", reason: "not a registered code repository" }, logLines: [] });
+    const { path } = await request.json() as { path: string };
+    const value = path === "pipelineSessions:signIn"
+      ? { status: "signedIn", sessionToken: "jive_session", expiresAt: 1_800_000_000_000 }
+      : { status: "refused", reason: "@test/client is provisioned for another code repository" };
+    return Response.json({ status: "success", value, logLines: [] });
   },
 });
 afterAll(() => fake.stop(true));
@@ -60,9 +64,10 @@ test("a package Jive refuses is neither packed nor published", async () => {
   })));
 
   expect(Result.isFailure(result) && result.failure).toBe(
-    "Jive refused to provision the npm package @test/client, so nothing was published: not a registered code repository",
+    "Jive refused to provision the npm package @test/client, so nothing was published: @test/client is provisioned for another code repository",
   );
-  expect(actionCalls).toBe(1);
+  // pipelineSessions:signIn, then packages:provision.
+  expect(actionCalls).toBe(2);
   expect(registryRequests).toBe(0);
   expect(readdirSync(outDir)).toEqual([]);
 });

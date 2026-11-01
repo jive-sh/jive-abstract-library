@@ -183,7 +183,7 @@ export type ProvisionWithJive = Schema.Schema.Type<typeof ProvisionWithJive>;
  * generated from; annotating the Option it decodes to never reaches the editor.
  */
 export const ProvisionWithJiveSchema = Schema.NullOr(ProvisionWithJive).annotate({
-  description: 'null to publish to npm as before, or {"serverUrl": …} to have each deploy call the Jive server\'s packages.provision with the job\'s GitHub OIDC token right before publishing. The deploy fails, publishing nothing, if Jive refuses. Needs `id-token: write`, which the deploy job of Jive\'s reusable pipeline has.',
+  description: 'null to publish to npm as before, or {"serverUrl": …} to have each deploy sign in to the Jive server with the job\'s GitHub OIDC token and call its packages.provision with that session right before publishing. The deploy fails, publishing nothing, if Jive refuses. Needs `id-token: write`, which the deploy job of Jive\'s reusable pipeline has.',
 }).pipe(Schema.decodeTo(Schema.Option(Schema.toType(ProvisionWithJive)), SchemaTransformation.optionFromNullOr()));
 
 /**

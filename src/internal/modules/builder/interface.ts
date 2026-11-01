@@ -35,8 +35,10 @@ export interface IBuilder {
    */
   build(input: BuildInput): EffectGen<BuildResult, string>;
   /**
-   * The package's commands built with `Cli`, found by running each `src/entrypoints/` command from source and
-   * asking what Tab offers at its root: one built with `Cli` lists `--setup-completion` and exits zero. Daemons
+   * The package's commands built with `Cli`, found by running each `src/entrypoints/` command from source with
+   * `--completion-protocol`: one whose `Cli` speaks the protocol this builder's launcher uses prints it and exits
+   * zero, so an older `Cli` (from another jive-abstract-library version) is left out rather than called with flags
+   * it lacks. Daemons
    * are never run (running one starts it), and a command still running after 30 seconds is stopped and counted
    * as not built with `Cli`. The build bakes the result into the launcher stubs.
    */

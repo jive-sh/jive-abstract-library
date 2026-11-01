@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Context, Data, Effect, Exit, Layer, Option, Sink, Stdio, pipe } from "effect";
 import { TestConsole } from "effect/testing";
 import * as Cli from "./index";
+import { completionScript } from "../../modules/shell-completion/scripts";
 
 /** A fake of the services a real CLI's choices and commands would call, recording what was run. */
 class RepoListError extends Data.TaggedError("RepoListError")<{ readonly message: string }> {}
@@ -241,6 +242,11 @@ describe("Tab completion (--compgen)", () => {
     expect((await completes("--")).lines).toEqual(["--help", "--version", "--setup-completion", "--remove-completion"]);
   });
 
+  test("reads a last word of \"\" as empty, which is how PowerShell's script sends an empty word", async () => {
+    expect((await completes("load", '""')).lines).toEqual((await completes("load", "")).lines);
+    expect((await completes('""', "")).lines).toEqual([]);
+  });
+
   test("a failing choices offers nothing and reports why on stderr", async () => {
     const { lines, stderr } = await completes("load", "offline", "");
     expect(lines).toEqual([]);
@@ -269,6 +275,31 @@ describe("Tab completion (--compgen)", () => {
     ));
     expect(stdout.join("")).toBe("x\n");
     expect(logged).toEqual([]);
+  });
+});
+
+describe("the hidden flags shells, launchers and builds call", () => {
+  test("--completion <shell> prints that shell's script, and refuses anything else", async () => {
+    const { stdout, exit } = await invoke(["--completion", "fish"]);
+    expect(Exit.isSuccess(exit)).toBe(true);
+    expect(stdout).toBe(completionScript("fish", "jive"));
+    for (const args of [["--completion"], ["--completion", "nu"], ["--completion", "zsh", "extra"]]) {
+      const outcome = await invoke(args);
+      expect(exitCodeOf(outcome.exit)).toBe(2);
+      expect(outcome.stderr).toStartWith("--completion takes one shell: bash, zsh, fish, powershell.\n");
+    }
+  });
+
+  test("--completion-protocol prints the protocol version and takes nothing after it", async () => {
+    expect((await invoke(["--completion-protocol"])).stdout).toBe("1\n");
+    expect(exitCodeOf((await invoke(["--completion-protocol", "x"])).exit)).toBe(2);
+  });
+
+  test("neither --help nor Tab mentions them", async () => {
+    const { stdout } = await invoke(["--help"]);
+    for (const hidden of ["--compgen", "--completion ", "--completion-protocol", "--setup-completion-if-missing"]) {
+      expect(stdout).not.toContain(hidden);
+    }
   });
 });
 

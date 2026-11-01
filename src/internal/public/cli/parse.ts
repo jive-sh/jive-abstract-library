@@ -1,4 +1,5 @@
 import { Data, Option } from "effect";
+import { SHELLS, type Shell } from "../../modules/shell-completion/interface";
 import { isChoice, isCommand, type Choice, type Cli, type Command, type FlagSet, type Group, type Node } from "./tree";
 
 /**
@@ -11,12 +12,36 @@ export const HELP_FLAGS: ReadonlyArray<string> = ["--help", "-h"];
 export const VERSION_FLAG = "--version";
 export const SET_UP_COMPLETION_FLAG = "--setup-completion";
 export const REMOVE_COMPLETION_FLAG = "--remove-completion";
+
+/*
+ * Hidden flags, never offered by Tab or listed by --help: what shells, launchers and builds call a CLI with.
+ * Together they are the completion protocol, versioned by COMPLETION_PROTOCOL.
+ */
 /** What a shell's Tab completion calls the CLI with, followed by the words typed so far. */
 export const COMPGEN_FLAG = "--compgen";
+/** Followed by a shell's name: prints the script that registers Tab completion, which the startup line evaluates. */
+export const COMPLETION_SCRIPT_FLAG = "--completion";
+/** Prints COMPLETION_PROTOCOL: how a build, or another copy of the CLI, learns this one speaks it. */
+export const COMPLETION_PROTOCOL_FLAG = "--completion-protocol";
+/** What the launcher runs after an install or upgrade: set up Tab completion if the user's shell lacks it. */
+export const SET_UP_MISSING_COMPLETION_FLAG = "--setup-completion-if-missing";
+/**
+ * Changes whenever a flag above changes meaning. A launcher's build checks the command prints exactly this, since
+ * the launcher comes from the jive-abstract-library that builds the package and the command from the one it
+ * depends on, and the two can differ.
+ */
+export const COMPLETION_PROTOCOL = "1";
+/**
+ * The word being completed, as PowerShell's script sends it when empty: Windows PowerShell, and PowerShell calling
+ * a `.cmd` file, drop an empty argument.
+ */
+const EMPTY_WORD_FROM_POWERSHELL = '""';
 const END_OF_FLAGS = "--";
 
-/** The root's own flags, each of which must be the only word given. */
-const ROOT_ACTION_FLAGS: ReadonlyArray<string> = [VERSION_FLAG, SET_UP_COMPLETION_FLAG, REMOVE_COMPLETION_FLAG];
+/** The root's own flags that take nothing after them. */
+const ROOT_ACTION_FLAGS: ReadonlyArray<string> = [
+  VERSION_FLAG, SET_UP_COMPLETION_FLAG, REMOVE_COMPLETION_FLAG, COMPLETION_PROTOCOL_FLAG, SET_UP_MISSING_COMPLETION_FLAG,
+];
 
 export type FlagValue = boolean | Option.Option<string>;
 
@@ -34,6 +59,10 @@ export type Invocation = Data.TaggedEnum<{
   Complete: { readonly words: ReadonlyArray<string> };
   SetUpCompletion: {};
   RemoveCompletion: {};
+  /** The launcher asks for completion to be set up only if the user's shell lacks it. */
+  SetUpMissingCompletion: {};
+  CompletionScript: { readonly shell: Shell };
+  CompletionProtocol: {};
   /** The words cannot be run; `node` and `path` are where reading stopped, whose help is shown with the message. */
   UsageError: { readonly message: string; readonly node: Node; readonly path: ReadonlyArray<string> };
   /** The CLI's own definition is wrong, which no input can fix. */
@@ -43,16 +72,27 @@ export const Invocation = Data.taggedEnum<Invocation>();
 
 export function parseInvocation(cli: Cli<any, any>, words: ReadonlyArray<string>): Invocation {
   const [first, ...rest] = words;
-  if (first === COMPGEN_FLAG) return Invocation.Complete({ words: rest });
+  if (first === COMPGEN_FLAG) {
+    const last = rest.length - 1;
+    return Invocation.Complete({ words: rest.map((word, i) => i === last && word === EMPTY_WORD_FROM_POWERSHELL ? "" : word) });
+  }
 
   const rootPath = [cli.name];
+  if (first === COMPLETION_SCRIPT_FLAG) {
+    const shell = SHELLS.find((candidate) => candidate === rest[0]);
+    return shell !== undefined && rest.length === 1
+      ? Invocation.CompletionScript({ shell })
+      : Invocation.UsageError({ message: `${first} takes one shell: ${SHELLS.join(", ")}.`, node: cli.commands, path: rootPath });
+  }
   if (first !== undefined && ROOT_ACTION_FLAGS.includes(first)) {
     if (rest.length > 0) {
       return Invocation.UsageError({ message: `${first} takes nothing after it.`, node: cli.commands, path: rootPath });
     }
     return first === VERSION_FLAG ? Invocation.Version()
       : first === SET_UP_COMPLETION_FLAG ? Invocation.SetUpCompletion()
-      : Invocation.RemoveCompletion();
+      : first === REMOVE_COMPLETION_FLAG ? Invocation.RemoveCompletion()
+      : first === COMPLETION_PROTOCOL_FLAG ? Invocation.CompletionProtocol()
+      : Invocation.SetUpMissingCompletion();
   }
 
   let node: Node = cli.commands;

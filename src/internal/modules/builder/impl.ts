@@ -22,8 +22,15 @@ import {
 } from "../../common/constants";
 import { editJsonc, insertAfter } from "../../common/jsonc";
 import { COMMAND_LAUNCHER_TEMPLATE } from "../../common/command-launcher";
-import { COMPGEN_FLAG, REMOVE_COMPLETION_FLAG, SET_UP_COMPLETION_FLAG } from "../../public/cli/parse";
-import { COMPLETION_LOCATIONS } from "../shell-completion/locations";
+import {
+  COMPGEN_FLAG,
+  COMPLETION_PROTOCOL,
+  COMPLETION_PROTOCOL_FLAG,
+  COMPLETION_SCRIPT_FLAG,
+  REMOVE_COMPLETION_FLAG,
+  SET_UP_COMPLETION_FLAG,
+  SET_UP_MISSING_COMPLETION_FLAG,
+} from "../../public/cli/parse";
 import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS, type BuildInput, type BuildResult, type IBuilder, type Platform } from "./interface";
 import { LOCAL_ENVIRONMENT } from "../../public/manifest";
@@ -177,14 +184,14 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
       if (dirname(sourcePath) !== entrypointDir) continue;
       const result = yield* this.dependencies.OSPlatform.spawnProcess({
         command: "bun",
-        args: [sourcePath, COMPGEN_FLAG, "--"],
+        args: [sourcePath, COMPLETION_PROTOCOL_FLAG],
         cwd: rootDir,
         timeoutMs: COMPLETION_PROBE_TIMEOUT_MS,
       });
-      if (result.exitCode === 0 && result.stdout.split("\n").includes(SET_UP_COMPLETION_FLAG)) found.push(command);
+      if (result.exitCode === 0 && result.stdout.trim() === COMPLETION_PROTOCOL) found.push(command);
     }
     yield* Effect.log(found.length === 0
-      ? "Tab completion: no command is built with Cli"
+      ? `Tab completion: no command speaks completion protocol ${COMPLETION_PROTOCOL} (Cli from jive-abstract-library 0.7.0 or later)`
       : `Tab completion: ${found.join(", ")} set it up from their launchers`);
     return found;
   }
@@ -469,10 +476,11 @@ function* renderLauncher(context: BuildContext, template: string, isInstallScrip
       packageName: context.packageJson.name,
       daemons: context.daemons,
       completionCommands: context.completionCommands,
-      completionLocations: COMPLETION_LOCATIONS,
-      completionSkipFlags: [COMPGEN_FLAG, SET_UP_COMPLETION_FLAG, REMOVE_COMPLETION_FLAG],
-      setUpCompletionFlag: SET_UP_COMPLETION_FLAG,
-      removeCompletionFlag: REMOVE_COMPLETION_FLAG,
+      completionSkipFlags: [
+        COMPGEN_FLAG, COMPLETION_SCRIPT_FLAG, COMPLETION_PROTOCOL_FLAG,
+        SET_UP_COMPLETION_FLAG, REMOVE_COMPLETION_FLAG, SET_UP_MISSING_COMPLETION_FLAG,
+      ],
+      setUpMissingCompletionFlag: SET_UP_MISSING_COMPLETION_FLAG,
       daemonIdPrefix: DAEMON_ID_PREFIX,
       daemonHomeDir: DAEMON_HOME_DIR,
       daemonRegistrySubdir: DAEMON_REGISTRY_SUBDIR,

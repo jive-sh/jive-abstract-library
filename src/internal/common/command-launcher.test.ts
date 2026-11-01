@@ -1,16 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ejs from "ejs";
-import { BunFileSystem } from "@effect/platform-bun";
-import { Effect, Layer, Option, pipe } from "effect";
-import { effunct } from "effective-modules";
-import { libraryModules } from "../modules";
-import { OSPlatformImpl } from "../modules/os-platform/impl";
-import { ShellCompletionImpl } from "../modules/shell-completion/impl";
-import { COMPLETION_LOCATIONS } from "../modules/shell-completion/locations";
 import { COMMAND_LAUNCHER_TEMPLATE } from "./command-launcher";
 
 const PKG = "@test/demo";
@@ -55,10 +48,8 @@ function render(completionCommands: ReadonlyArray<string>): string {
   return ejs.render(COMMAND_LAUNCHER_TEMPLATE, {
     commandNames: ["demo"],
     completionCommands,
-    completionLocations: COMPLETION_LOCATIONS,
-    completionSkipFlags: ["--compgen", "--setup-completion", "--remove-completion"],
-    setUpCompletionFlag: "--setup-completion",
-    removeCompletionFlag: "--remove-completion",
+    completionSkipFlags: ["--compgen", "--completion", "--setup-completion"],
+    setUpMissingCompletionFlag: "--setup-completion-if-missing",
     packageName: PKG,
     daemons: [],
     daemonIdPrefix: "test",
@@ -108,76 +99,32 @@ describe.skipIf(process.platform === "win32")("command launcher", () => {
 });
 
 describe.skipIf(process.platform === "win32")("setting up missing Tab completion from the launcher", () => {
-  /** A user's machine: its own home, the given SHELL, no CI, and the platform binary recording its calls. */
-  function machine(shell: string, extraEnv: Record<string, string> = {}) {
+  /**
+   * A fresh install per launch: the launcher replaces itself with the binary on its first run, so only the first
+   * launch after an install or upgrade runs it. The binary records each call; deciding whether anything needs
+   * setting up is the command's own job, tested with ShellCompletion.
+   */
+  function launch(completionCommands: ReadonlyArray<string>, ...args: Array<string>) {
     const home = mkdtempSync(join(tmpdir(), "launcher-home-"));
     const calls = join(home, "calls");
-    const env = { PATH: process.env["PATH"] ?? "", HOME: home, SHELL: shell, ZDOTDIR: home, XDG_CONFIG_HOME: join(home, ".config"), CALLS: calls, ...extraEnv };
-    // A fresh install per launch: the launcher replaces itself with the binary on its first run, so only
-    // the first launch after an install or upgrade runs it.
-    const launch = (...args: Array<string>) => {
-      const result = spawnSync("node", [install([reported], ["demo"]), ...args], { encoding: "utf8", env });
-      return { stderr: result.stderr, calls: existsSync(calls) ? readFileSync(calls, "utf-8").trim().split("\n") : [] };
-    };
-    return { home, env, launch };
+    const result = spawnSync("node", [install([reported], completionCommands), ...args], {
+      encoding: "utf8",
+      env: { PATH: process.env["PATH"] ?? "", HOME: home, CALLS: calls },
+    });
+    return { stdout: result.stdout, calls: existsSync(calls) ? readFileSync(calls, "utf-8").trim().split("\n") : [] };
   }
 
-  test("sets it up when the startup file does not load it, saying where, then runs the command", () => {
-    const { home, launch } = machine("/bin/zsh");
-    writeFileSync(join(home, ".zshrc"), "export EDITOR=vim\n");
-    const { stderr, calls } = launch("hello");
-    expect(stderr).toBe(`Setting up Tab completion for demo in ${join(home, ".zshrc")} (turn it off with: demo --remove-completion)\n`);
-    expect(calls).toEqual(["--setup-completion", "hello"]);
+  test("asks a command built with Cli to set up missing completion, then runs what was typed", () => {
+    const { stdout, calls } = launch(["demo"], "hello");
+    expect(calls).toEqual(["--setup-completion-if-missing", "hello"]);
+    // The command's own stdout reaches the caller; what it printed while checking completion does not.
+    expect(stdout.trim()).toBe(`${reported} hello`);
   });
 
-  test("does nothing more once the startup file loads it and the script is there", () => {
-    const { home, launch } = machine("/bin/zsh");
-    mkdirSync(join(home, ".jive", "completions"), { recursive: true });
-    writeFileSync(join(home, ".jive", "completions", "demo.zsh"), "");
-    writeFileSync(join(home, ".zshrc"), "# begin demo completion\n. x\n# end demo completion\n");
-    expect(launch("hello")).toEqual({ stderr: "", calls: ["hello"] });
-  });
-
-  test("leaves it alone when turned off, on a build agent, for Tab itself, and for a shell it has none for", () => {
-    const off = machine("/bin/zsh");
-    mkdirSync(join(off.home, ".jive", "completions"), { recursive: true });
-    writeFileSync(join(off.home, ".jive", "completions", "demo.off"), "");
-    expect(off.launch("hello").calls).toEqual(["hello"]);
-    expect(machine("/bin/zsh", { CI: "true" }).launch("hello").calls).toEqual(["hello"]);
-    expect(machine("/bin/zsh").launch("--compgen", "").calls).toEqual(["--compgen"]);
-    expect(machine("/bin/zsh").launch("--remove-completion").calls).toEqual(["--remove-completion"]);
-    expect(machine("/usr/bin/nu").launch("hello").calls).toEqual(["hello"]);
-  });
-
-  test("a command not built with Cli is never asked", () => {
-    const home = mkdtempSync(join(tmpdir(), "launcher-home-"));
-    const calls = join(home, "calls");
-    const launcher = install([reported], []);
-    spawnSync("node", [launcher, "hello"], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", HOME: home, SHELL: "/bin/zsh", CALLS: calls } });
-    expect(readFileSync(calls, "utf-8").trim().split("\n")).toEqual(["hello"]);
-  });
-
-  test("looks where --setup-completion writes, for every shell", async () => {
-    for (const shell of COMPLETION_LOCATIONS.shells) {
-      const { home, env, launch } = machine(`/bin/${shell}`);
-      const written = await Effect.runPromise(pipe(
-        effunct(function* () { return yield* (yield* libraryModules.ShellCompletion).setUp("demo"); })(),
-        Effect.provide(pipe(
-          ShellCompletionImpl.Layer,
-          Layer.provideMerge(OSPlatformImpl.mockLayer({
-            *readEnv(name: string) { return Option.fromUndefinedOr((env as Record<string, string | undefined>)[name]); },
-            *getHomeDirectory() { return home; },
-            *getCurrentPlatform() { return { os: process.platform, cpu: process.arch }; },
-          })),
-          Layer.provideMerge(BunFileSystem.layer),
-        )),
-      ));
-      // What the module wrote is exactly what the launcher counts as set up...
-      expect(launch("hello")).toEqual({ stderr: "", calls: ["hello"] });
-      // ...and with it gone, the launcher names the same place the module writes to.
-      const where = Option.getOrElse(written.startupFile, () => written.scriptPath);
-      rmSync(where);
-      expect(launch("again").stderr).toContain(`demo in ${where} `);
-    }
+  test("leaves it alone for a shell's or launcher's own call, and for a command not built with Cli", () => {
+    expect(launch(["demo"], "--compgen", "").calls).toEqual(["--compgen"]);
+    expect(launch(["demo"], "--completion", "zsh").calls).toEqual(["--completion zsh"]);
+    expect(launch(["demo"], "--setup-completion").calls).toEqual(["--setup-completion"]);
+    expect(launch([], "hello").calls).toEqual(["hello"]);
   });
 });

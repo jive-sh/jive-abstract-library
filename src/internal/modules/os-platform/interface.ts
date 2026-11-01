@@ -42,8 +42,11 @@ export interface IOSPlatform {
   startDetached(input: DetachedProcessInput): EffectGen<void, string>;
   /** Compiles an entrypoint into a standalone executable for one platform target. */
   compileExecutable(input: CompileExecutableInput): EffectGen<void, string>;
-  /** Finds a command on PATH the way a shell would, returning the executable's path; none when it is not installed. */
-  findExecutable(command: string): EffectGen<Option.Option<string>>;
+  /**
+   * Finds a command on PATH the way a shell would, returning the executable's path; none when it is not installed.
+   * `searchPath` replaces PATH for this lookup.
+   */
+  findExecutable(command: string, options?: { readonly searchPath?: string }): EffectGen<Option.Option<string>>;
   /** Reads this process's current working directory. */
   getCurrentDirectory(): EffectGen<string>;
   /** The platform this process is running on, as an os/cpu pair. */

@@ -90,8 +90,9 @@ export class OSPlatformImpl extends implementing(libraryModules.OSPlatform) impl
     }
   }
 
-  *findExecutable(command: string): EffectGen<Option.Option<string>> {
-    return Option.fromNullishOr(yield* Effect.sync(() => Bun.which(command)));
+  *findExecutable(command: string, options?: { readonly searchPath?: string }): EffectGen<Option.Option<string>> {
+    const searchPath = options?.searchPath;
+    return Option.fromNullishOr(yield* Effect.sync(() => Bun.which(command, searchPath === undefined ? undefined : { PATH: searchPath })));
   }
 
   *getCurrentDirectory(): EffectGen<string> {

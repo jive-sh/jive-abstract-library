@@ -1,12 +1,14 @@
 import { Data, Effect, Layer, Match, Option, Runtime, Sink, Stdio, Stream, pipe } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
-import { effunct } from "effective-modules";
-import { libraryModules } from "../../modules";
+import { effunct, type EffectGen } from "effective-modules";
+import { libraryModules, type LibraryModules } from "../../modules";
 import { OSPlatformImpl } from "../../modules/os-platform/impl";
 import { ShellCompletionImpl } from "../../modules/shell-completion/impl";
+import type { CompletionSetup, IShellCompletion } from "../../modules/shell-completion/interface";
+import { completionScript } from "../../modules/shell-completion/scripts";
 import { complete, formatCompletion } from "./completion";
 import { renderHelp } from "./help";
-import { parseInvocation } from "./parse";
+import { COMPLETION_PROTOCOL, REMOVE_COMPLETION_FLAG, parseInvocation } from "./parse";
 import type { Cli } from "./tree";
 
 /**
@@ -64,17 +66,22 @@ export function run<E, R>(
           if (Option.isSome(failure)) yield* stderr(`\n${cli.name}: could not list choices: ${failure.value}\n`);
         }),
         SetUpCompletion: () => Effect.gen(function* () {
-          const files = yield* completionChange(cli.name, "set up");
-          const reload = Option.match(files.startupFile, {
-            onNone: () => "Open a new shell to use it.",
-            onSome: (startupFile) => `Open a new shell, or run: source ${startupFile}`,
-          });
-          yield* stdout(`Tab completion for ${cli.name} is set up for ${files.shell}. ${reload}\n`);
+          const setup = yield* completionChange((shellCompletion) => shellCompletion.setUp(cli.name));
+          yield* stdout(`Tab completion for ${cli.name} is set up for ${setup.shell} in ${setup.files.join(" and ")}; it starts in new shells.\n${warningLines(setup)}`);
         }),
         RemoveCompletion: () => Effect.gen(function* () {
-          const files = yield* completionChange(cli.name, "remove");
-          yield* stdout(`Tab completion for ${cli.name} is removed for ${files.shell}; it stops in new shells.\n`);
+          const setup = yield* completionChange((shellCompletion) => shellCompletion.remove(cli.name));
+          yield* stdout(`Tab completion for ${cli.name} is removed for ${setup.shell} from ${setup.files.join(" and ")}; it stops in new shells.\n`);
         }),
+        // On stderr: the launcher runs this before the command the user typed, whose stdout may be read by a program.
+        SetUpMissingCompletion: () => Effect.gen(function* () {
+          const outcome = yield* completionChange((shellCompletion) => shellCompletion.setUpMissing(cli.name));
+          if (outcome._tag !== "SetUp") return;
+          const { setup } = outcome;
+          yield* stderr(`Set up Tab completion for ${cli.name} in ${setup.files.join(" and ")}; it starts in new shells (turn it off with: ${cli.name} ${REMOVE_COMPLETION_FLAG}).\n${warningLines(setup)}`);
+        }),
+        CompletionScript: ({ shell }) => stdout(completionScript(shell, cli.name)),
+        CompletionProtocol: () => stdout(`${COMPLETION_PROTOCOL}\n`),
         UsageError: ({ message, node, path }) => Effect.gen(function* () {
           yield* stderr(`${message}\n\n${yield* renderHelp(cli, node, path)}`);
           return yield* new CliError({ message, exitCode: USAGE_EXIT_CODE });
@@ -83,15 +90,18 @@ export function run<E, R>(
       }),
     );
 
-    function completionChange(commandName: string, change: "set up" | "remove") {
+    function completionChange<A>(change: (shellCompletion: IShellCompletion) => EffectGen<A, string>) {
       return pipe(
-        effunct(function* () {
-          const shellCompletion = yield* libraryModules.ShellCompletion;
-          return change === "set up" ? yield* shellCompletion.setUp(commandName) : yield* shellCompletion.remove(commandName);
+        effunct(function* (): EffectGen<A, string, LibraryModules.ShellCompletion> {
+          return yield* change(yield* libraryModules.ShellCompletion);
         })(),
         Effect.provide(completionLayer),
-        Effect.catch((message: string) => failWith(message, 1)),
+        Effect.catch((message: string) => failWith(`Tab completion for ${cli.name}: ${message}`, 1)),
       );
     }
   });
+}
+
+function warningLines(setup: CompletionSetup): string {
+  return setup.warnings.map((warning) => `${warning}\n`).join("");
 }

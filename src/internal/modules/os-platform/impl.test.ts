@@ -19,6 +19,21 @@ test("findExecutable finds an installed command and returns none for a missing o
   expect(missing).toEqual(Option.none());
 });
 
+test("findExecutable searches only the given searchPath when one is passed", async () => {
+  const { inBin, inEmpty } = await Effect.runPromise(pipe(
+    effunct(function* () {
+      const osPlatform = yield* libraryModules.OSPlatform;
+      return {
+        inBin: yield* osPlatform.findExecutable("sh", { searchPath: "/bin" }),
+        inEmpty: yield* osPlatform.findExecutable("sh", { searchPath: "/nonexistent-dir" }),
+      };
+    })(),
+    Effect.provide(OSPlatformImpl.Layer),
+  ));
+  expect(inBin).toEqual(Option.some("/bin/sh"));
+  expect(inEmpty).toEqual(Option.none());
+});
+
 test("spawnProcess without an env gives the child this process's environment as it is now", async () => {
   process.env["JIVE_SPAWN_TEST"] = "set after start";
   try {

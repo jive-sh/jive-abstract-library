@@ -6,6 +6,12 @@
  * runs, with its flags typed from their declarations. `run` reads the arguments and does what they say; the
  * root also answers `--help`, `--version`, `--setup-completion` and `--remove-completion`.
  *
+ * Tab completion is set up as one line in the user's shell (bash, zsh, fish or PowerShell) that runs
+ * `<cli> --completion <shell>` at each shell start, so the script always comes from the installed version. A
+ * package built by jive-abstract-library sets that line up by itself after an install or upgrade, when the copy
+ * installed is the one the user's PATH runs; a copy installed only in a project does nothing. The flags shells,
+ * launchers and builds call are hidden from `--help` and Tab and listed in `parse.ts`.
+ *
  * ```ts
  * const jive = Cli.make("jive", {
  *   load: Cli.choose({

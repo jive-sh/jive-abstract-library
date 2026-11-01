@@ -1,29 +1,58 @@
-import type { Option } from "effect";
+import { Data } from "effect";
 import type { EffectGen } from "effective-modules";
 
-export type Shell = "bash" | "zsh" | "fish";
+export const SHELLS = ["bash", "zsh", "fish", "powershell"] as const;
+export type Shell = (typeof SHELLS)[number];
 
-/** Where one command's Tab completion lives for one shell. */
-export interface CompletionFiles {
+/** Where one command's Tab completion is loaded from for one shell. */
+export interface CompletionSetup {
   readonly shell: Shell;
-  /** The script the shell loads. */
-  readonly scriptPath: string;
-  /** The startup file that loads the script; none for fish, which loads completion scripts by itself. */
-  readonly startupFile: Option.Option<string>;
+  /**
+   * Each file holding the line that loads the completion: bash's or zsh's startup file, fish's completions file
+   * for the command, or the profile of each installed PowerShell.
+   */
+  readonly files: ReadonlyArray<string>;
+  /** Why the shell may not run those files yet, such as PowerShell's execution policy stopping profiles. */
+  readonly warnings: ReadonlyArray<string>;
 }
 
+/** What setting up missing completion found, and did when nothing stopped it. */
+export type MissingCompletion = Data.TaggedEnum<{
+  SetUp: { readonly setup: CompletionSetup };
+  AlreadySetUp: {};
+  /** Turned off with `--remove-completion`. */
+  TurnedOff: {};
+  /** `CI` is set: a build agent's shell is never opened by a person. */
+  OnBuildAgent: {};
+  /**
+   * Typing the command's name in a new shell would not run a command that serves this completion: this copy is
+   * installed in a project, run through its package manager, and nothing on the user's own PATH has the name.
+   */
+  NotOnPath: {};
+  NoSupportedShell: { readonly reason: string };
+}>;
+export const MissingCompletion = Data.taggedEnum<MissingCompletion>();
+
 /**
- * Turning Tab completion for a command on and off in the current user's shell, the one `SHELL` names.
+ * Turning Tab completion for a command on and off in the current user's shell: the one `SHELL` names, or
+ * PowerShell on Windows when `SHELL` is unset.
  *
- * Bash and zsh load the script from a guarded line in their startup file, so deleting the script by hand
- * leaves the line harmless; fish needs no line, since it loads any script in its completions directory.
+ * Each shell gets one guarded line between `# begin <command> completion` and `# end <command> completion`. At
+ * every shell start it runs `<command> --completion <shell>` and evaluates the script that prints, if the command
+ * is installed; so the script always matches the installed version, and uninstalling the command leaves a line
+ * that does nothing.
  */
 export interface IShellCompletion {
-  /** Writes the script and the startup file's line, replacing an earlier setup of the same command. */
-  setUp(commandName: string): EffectGen<CompletionFiles, string>;
+  /** Writes the line, replacing an earlier one for the same command, and clears a turned-off record. */
+  setUp(commandName: string): EffectGen<CompletionSetup, string>;
   /**
-   * Removes the script and the startup file's line, whichever of them exist, and records that completion was
-   * turned off, so the launcher stub does not set it up again until `setUp` runs.
+   * Sets up completion unless it is already set up as `setUp` would write it, was turned off, this is a build
+   * agent, or typing the name in a new shell would not run a command that serves it (`MissingCompletion`).
    */
-  remove(commandName: string): EffectGen<CompletionFiles, string>;
+  setUpMissing(commandName: string): EffectGen<MissingCompletion, string>;
+  /**
+   * Removes the line wherever it is, and records that completion was turned off, so `setUpMissing` leaves it off
+   * until `setUp` runs.
+   */
+  remove(commandName: string): EffectGen<CompletionSetup, string>;
 }

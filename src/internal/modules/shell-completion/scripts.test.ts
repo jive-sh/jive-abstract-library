@@ -1,16 +1,20 @@
-import { beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withStartupBlock, withoutStartupBlock } from "./scripts";
 
 /**
- * Each shell's real completion, end to end: `--setup-completion` writes the files into a temporary home, the
- * shell loads them the way a new shell would, and pressing Tab is simulated by calling what the shell itself
- * would call. The CLI on the other end is `fixture-cli.ts`, run as a separate process by its name on PATH.
+ * Each shell's real completion, end to end: `--setup-completion` writes the startup line into a temporary home,
+ * the shell runs it the way a new shell would (so it calls `fixturecli --completion <shell>` and evaluates what
+ * that prints), and pressing Tab is simulated by calling what the shell itself would call. The CLI on the other
+ * end is `fixture-cli.ts`, run as a separate process by its name on PATH.
  *
  * A shell that is not installed is skipped, by name, so the run says which shells it covered.
  */
+
+// Each Tab starts a shell that starts the fixture through bun, more than once; a cold runner takes seconds.
+setDefaultTimeout(30_000);
 
 const FIXTURE = join(import.meta.dir, "fixture-cli.ts");
 const which = (shell: string) => Bun.which(shell);
@@ -18,18 +22,29 @@ const which = (shell: string) => Bun.which(shell);
 let root = "";
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), "shell-completion-"));
-  mkdirSync(join(root, "bin"));
-  writeFileSync(join(root, "bin", "fixturecli"), `#!/bin/sh\nexec "${process.execPath}" "${FIXTURE}" "$@"\n`);
-  chmodSync(join(root, "bin", "fixturecli"), 0o755);
+  for (const dir of [join(root, "bin"), join(root, "project", "node_modules", ".bin")]) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "fixturecli"), `#!/bin/sh\nexec "${process.execPath}" "${FIXTURE}" "$@"\n`);
+    chmodSync(join(dir, "fixturecli"), 0o755);
+  }
 });
 
-/** A home of its own per shell, so one shell's startup files never feed another's. */
-async function setUpFor(shell: string): Promise<Record<string, string>> {
-  const home = join(root, shell);
+/** A home of its own per test, so one shell's startup files never feed another's. */
+function homeFor(name: string, shell: string, binDir = join(root, "bin")): Record<string, string> {
+  const home = join(root, name);
   mkdirSync(home, { recursive: true });
-  const env = { PATH: `${join(root, "bin")}:${process.env["PATH"] ?? ""}`, HOME: home, ZDOTDIR: home, XDG_CONFIG_HOME: join(home, ".config"), SHELL: `/bin/${shell}` };
-  const setUp = Bun.spawn(["fixturecli", "--setup-completion"], { env, stdout: "pipe", stderr: "pipe" });
-  expect(await setUp.exited).toBe(0);
+  return { PATH: `${binDir}:${process.env["PATH"] ?? ""}`, HOME: home, ZDOTDIR: home, XDG_CONFIG_HOME: join(home, ".config"), SHELL: shell };
+}
+
+async function fixture(args: ReadonlyArray<string>, env: Record<string, string>) {
+  const proc = Bun.spawn(["fixturecli", ...args], { env, stdout: "pipe", stderr: "pipe" });
+  const [exitCode, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  return { exitCode, stdout, stderr };
+}
+
+async function setUpFor(shell: string): Promise<Record<string, string>> {
+  const env = homeFor(shell, `/bin/${shell}`);
+  expect((await fixture(["--setup-completion"], env)).exitCode).toBe(0);
   return env;
 }
 
@@ -37,7 +52,7 @@ async function shellOutput(argv: ReadonlyArray<string>, environment: Record<stri
   const proc = Bun.spawn([...argv], { env: environment, stdout: "pipe", stderr: "pipe" });
   const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   if (code !== 0) throw new Error(`${argv[0]} exited ${code}: ${stderr}`);
-  return stdout.split("\n").filter((line) => line !== "");
+  return stdout.split(/\r?\n/).filter((line) => line !== "");
 }
 
 describe.skipIf(which("bash") === null)("bash", () => {
@@ -55,6 +70,12 @@ describe.skipIf(which("bash") === null)("bash", () => {
     expect(await tab(environment, ["load", "j"])).toEqual(["jive-sh"]);
     expect(await tab(environment, ["load", "jive-sh", "--branch", ""])).toEqual(["jive-sh-main", "jive-sh-next"]);
     expect(await tab(environment, ["load", "jive-sh", "--"])).toEqual(["--shallow", "--branch", "--help"]);
+  });
+
+  test("the startup line does nothing, silently, once the command is uninstalled", async () => {
+    const environment = { ...(await setUpFor("bash")), PATH: "/usr/bin:/bin" };
+    expect(await shellOutput(["bash", "--norc", "--noprofile", "-c", `for f in "$HOME/.bash_profile" "$HOME/.bashrc"; do [ -f "$f" ] && . "$f"; done; echo started`], environment))
+      .toEqual(["started"]);
   });
 });
 
@@ -84,6 +105,49 @@ describe.skipIf(which("fish") === null)("fish", () => {
     const environment = await setUpFor("fish");
     expect(await tab(environment, "fixturecli ")).toEqual(["load\tClone a repo", "provision"]);
     expect(await tab(environment, "fixturecli load jive-sh --branch j")).toEqual(["jive-sh-main", "jive-sh-next"]);
+  });
+});
+
+describe.skipIf(which("pwsh") === null)("PowerShell", () => {
+  /** Loads the profile pwsh reports, then asks PowerShell's own TabExpansion2 to complete the line. */
+  const tab = (environment: Record<string, string>, line: string) => shellOutput([
+    "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+    `. $PROFILE.CurrentUserAllHosts; (TabExpansion2 -inputScript '${line}' -cursorColumn ${line.length}).CompletionMatches | ForEach-Object { "$($_.CompletionText)\`t$($_.ToolTip)" }`,
+  ], environment);
+
+  test("offers values with descriptions, including after a space", async () => {
+    const environment = await setUpFor("pwsh");
+    expect(await tab(environment, "fixturecli ")).toEqual(["load\tClone a repo", "provision\tprovision"]);
+    expect(await tab(environment, "fixturecli lo")).toEqual(["load\tClone a repo"]);
+    expect(await tab(environment, "fixturecli load ")).toEqual(["chaine-dance\tchaine-dance", "jive-sh\tjive-sh"]);
+    expect(await tab(environment, "fixturecli load jive-sh --branch j")).toEqual(["jive-sh-main\tjive-sh-main", "jive-sh-next\tjive-sh-next"]);
+  });
+});
+
+describe("setting up missing completion from a real command", () => {
+  test("sets it up once when the command on PATH speaks the protocol, saying so on stderr only", async () => {
+    const env = homeFor("missing-global", "/bin/zsh");
+    const first = await fixture(["--setup-completion-if-missing"], env);
+    expect(first).toEqual({
+      exitCode: 0,
+      stdout: "",
+      stderr: `Set up Tab completion for fixturecli in ${join(env["HOME"]!, ".zshrc")}; it starts in new shells (turn it off with: fixturecli --remove-completion).\n`,
+    });
+    expect(await fixture(["--setup-completion-if-missing"], env)).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+  });
+
+  test("a copy found only in a project's node_modules/.bin sets nothing up", async () => {
+    const env = homeFor("missing-project", "/bin/zsh", join(root, "project", "node_modules", ".bin"));
+    expect(await fixture(["--setup-completion-if-missing"], env)).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    expect(existsSync(join(env["HOME"]!, ".zshrc"))).toBe(false);
+  });
+
+  test("--remove-completion keeps it off", async () => {
+    const env = homeFor("missing-off", "/bin/zsh");
+    expect((await fixture(["--setup-completion"], env)).exitCode).toBe(0);
+    expect((await fixture(["--remove-completion"], env)).exitCode).toBe(0);
+    expect(await fixture(["--setup-completion-if-missing"], env)).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    expect(readFileSync(join(env["HOME"]!, ".zshrc"), "utf-8")).toBe("");
   });
 });
 

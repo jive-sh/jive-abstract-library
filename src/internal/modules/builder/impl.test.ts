@@ -15,13 +15,15 @@ import { BuilderImpl } from "./impl";
 const CLI_FIXTURE = join(import.meta.dir, "..", "shell-completion", "fixture-cli.ts");
 
 describe.skipIf(process.platform === "win32")("finding the commands built with Cli", () => {
-  test("asks each entrypoint, counts only the one built with Cli, and never runs a daemon", async () => {
+  test("asks each entrypoint, counts only the one speaking this protocol, and never runs a daemon", async () => {
     const root = mkdtempSync(join(tmpdir(), "completion-probe-"));
     mkdirSync(join(root, "src", "entrypoints"), { recursive: true });
     mkdirSync(join(root, "src", "daemons"), { recursive: true });
     writeFileSync(join(root, "src", "entrypoints", "built-with-cli.ts"), `import ${JSON.stringify(CLI_FIXTURE)};\n`);
-    // Prints the right word but fails, as a CLI rejecting an unknown flag does after echoing it.
-    writeFileSync(join(root, "src", "entrypoints", "other.ts"), `console.log("--setup-completion"); process.exit(1);\n`);
+    // Prints the right answer but fails, as a CLI rejecting an unknown flag might after echoing something.
+    writeFileSync(join(root, "src", "entrypoints", "other.ts"), `console.log("1"); process.exit(1);\n`);
+    // Exits zero with another protocol's answer, as a Cli from a later jive-abstract-library would.
+    writeFileSync(join(root, "src", "entrypoints", "newer.ts"), `console.log("2");\n`);
     const daemonRan = join(root, "daemon-ran");
     writeFileSync(join(root, "src", "daemons", "watcher.ts"), `await Bun.write(${JSON.stringify(daemonRan)}, "yes");\n`);
 

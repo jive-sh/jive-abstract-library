@@ -54,15 +54,35 @@ export class ShellCompletionImpl extends implementing(libraryModules.ShellComple
     if (yield* this.exists(yield* this.turnedOffMarker(commandName))) return MissingCompletion.TurnedOff();
     const maybeShell = yield* this.userShell();
     if (Result.isFailure(maybeShell)) return MissingCompletion.NoSupportedShell({ reason: maybeShell.failure });
-    if (!(yield* this.servedFromUserPath(commandName))) return MissingCompletion.NotOnPath();
 
     const { files } = yield* this.locate(commandName, maybeShell.success);
     // Exactly the current line, so an older or commented-out block between the same markers is replaced.
     const block = startupBlock(maybeShell.success, commandName);
+    let missing = false;
     for (const file of files) {
-      if (!(yield* this.readIfPresent(file.path)).includes(block)) return MissingCompletion.SetUp({ setup: yield* this.setUp(commandName) });
+      if (!(yield* this.readIfPresent(file.path)).includes(block)) missing = true;
     }
-    return MissingCompletion.AlreadySetUp();
+    if (!missing) return MissingCompletion.AlreadySetUp();
+    // Checked last: it can start the command found on PATH to ask which completion it speaks.
+    if (!(yield* this.servedFromUserPath(commandName))) return MissingCompletion.NotOnPath();
+    return MissingCompletion.SetUp({ setup: yield* this.setUp(commandName) });
+  }
+
+  *setUpMissingOncePerVersion(commandName: string, version: string): EffectGen<MissingCompletion, string> {
+    const fs = this.getDependency(FileSystem.FileSystem);
+    const home = yield* this.dependencies.OSPlatform.getHomeDirectory();
+    const checked = join(home, ...TURNED_OFF_DIR, `${commandName}.checked`);
+    if ((yield* this.readIfPresent(checked)).trim() === version) return MissingCompletion.CheckedBefore();
+    const outcome = yield* this.setUpMissing(commandName);
+    // A build agent checks every run, since its home is usually fresh; everywhere else this version is done.
+    if (outcome._tag !== "OnBuildAgent") {
+      yield* pipe(
+        fs.makeDirectory(dirname(checked), { recursive: true }),
+        Effect.andThen(fs.writeFileString(checked, `${version}\n`)),
+        Effect.mapError((e) => `Could not write ${checked}: ${e.message}`),
+      );
+    }
+    return outcome;
   }
 
   *remove(commandName: string): EffectGen<CompletionSetup, string> {

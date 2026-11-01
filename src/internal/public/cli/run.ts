@@ -4,7 +4,8 @@ import { effunct, type EffectGen } from "effective-modules";
 import { libraryModules, type LibraryModules } from "../../modules";
 import { OSPlatformImpl } from "../../modules/os-platform/impl";
 import { ShellCompletionImpl } from "../../modules/shell-completion/impl";
-import type { CompletionSetup, IShellCompletion } from "../../modules/shell-completion/interface";
+import type { CompletionSetup, IShellCompletion, MissingCompletion } from "../../modules/shell-completion/interface";
+import { basename } from "node:path";
 import { completionScript } from "../../modules/shell-completion/scripts";
 import { complete, formatCompletion } from "./completion";
 import { renderHelp } from "./help";
@@ -25,6 +26,9 @@ export class CliError extends Data.TaggedError("CliError")<{ readonly message: s
 
 /** The conventional exit code for a command used wrongly. */
 const USAGE_EXIT_CODE = 2;
+
+/** What a person runs, as opposed to what a shell, a launcher or the completion code itself calls. */
+const PERSON_FACING_INVOCATIONS: ReadonlyArray<string> = ["Execute", "Help", "Version", "UsageError"];
 
 /** Only what turning completion on and off needs; it is bundled into every CLI built on this. */
 const completionLayer = pipe(
@@ -53,6 +57,7 @@ export function run<E, R>(
       Effect.andThen(stderr(`${message}\n`), Effect.fail(new CliError({ message, exitCode })));
 
     const invocation = parseInvocation(cli, yield* stdio.args);
+    if (PERSON_FACING_INVOCATIONS.includes(invocation._tag)) yield* setUpMissingCompletionOnFirstRun();
     return yield* pipe(
       invocation,
       Match.valueTags({
@@ -75,10 +80,7 @@ export function run<E, R>(
         }),
         // On stderr: the launcher runs this before the command the user typed, whose stdout may be read by a program.
         SetUpMissingCompletion: () => Effect.gen(function* () {
-          const outcome = yield* completionChange((shellCompletion) => shellCompletion.setUpMissing(cli.name));
-          if (outcome._tag !== "SetUp") return;
-          const { setup } = outcome;
-          yield* stderr(`Set up Tab completion for ${cli.name} in ${setup.files.join(" and ")}; it starts in new shells (turn it off with: ${cli.name} ${REMOVE_COMPLETION_FLAG}).\n${warningLines(setup)}`);
+          yield* reportSetUp(yield* completionChange((shellCompletion) => shellCompletion.setUpMissing(cli.name)));
         }),
         CompletionScript: ({ shell }) => stdout(completionScript(shell, cli.name)),
         CompletionProtocol: () => stdout(`${COMPLETION_PROTOCOL}\n`),
@@ -89,6 +91,31 @@ export function run<E, R>(
         InvalidDefinition: ({ message }) => Effect.die(new Error(`${cli.name} is defined wrongly: ${message}`)),
       }),
     );
+
+    function reportSetUp(outcome: MissingCompletion) {
+      if (outcome._tag !== "SetUp") return Effect.void;
+      const { setup } = outcome;
+      return stderr(`Set up Tab completion for ${cli.name} in ${setup.files.join(" and ")}; it starts in new shells (turn it off with: ${cli.name} ${REMOVE_COMPLETION_FLAG}).\n${warningLines(setup)}`);
+    }
+
+    /**
+     * The first run of each installed version sets up missing completion itself, since a package manager may skip the
+     * install script that would (Bun does). Only the installed command does: run from source (a test, a dev server) it
+     * is not the command a new shell would run. Nothing here stops the command the person ran; a problem is one line
+     * on stderr.
+     */
+    function setUpMissingCompletionOnFirstRun() {
+      return pipe(
+        effunct(function* (): EffectGen<Option.Option<MissingCompletion>, string, LibraryModules.ShellCompletion | LibraryModules.OSPlatform> {
+          const executable = basename(yield* (yield* libraryModules.OSPlatform).getExecutablePath()).replace(/\.exe$/, "");
+          if (executable !== cli.name) return Option.none();
+          return Option.some(yield* (yield* libraryModules.ShellCompletion).setUpMissingOncePerVersion(cli.name, options.version));
+        })(),
+        Effect.provide(completionLayer),
+        Effect.flatMap((maybeOutcome) => Option.isSome(maybeOutcome) ? reportSetUp(maybeOutcome.value) : Effect.void),
+        Effect.catch((message: string) => stderr(`Tab completion for ${cli.name}: ${message}\n`)),
+      );
+    }
 
     function completionChange<A>(change: (shellCompletion: IShellCompletion) => EffectGen<A, string>) {
       return pipe(

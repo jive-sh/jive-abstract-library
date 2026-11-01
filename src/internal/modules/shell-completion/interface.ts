@@ -30,6 +30,8 @@ export type MissingCompletion = Data.TaggedEnum<{
    */
   NotOnPath: {};
   NoSupportedShell: { readonly reason: string };
+  /** This version of the command already checked, on an earlier run. */
+  CheckedBefore: {};
 }>;
 export const MissingCompletion = Data.taggedEnum<MissingCompletion>();
 
@@ -50,6 +52,12 @@ export interface IShellCompletion {
    * agent, or typing the name in a new shell would not run a command that serves it (`MissingCompletion`).
    */
   setUpMissing(commandName: string): EffectGen<MissingCompletion, string>;
+  /**
+   * `setUpMissing`, once per installed version of the command: the first run of each version checks, and records the
+   * version so later runs return `CheckedBefore` at the cost of one small file read. The command calls this on every
+   * run, so completion is set up even when the package manager skipped the install script.
+   */
+  setUpMissingOncePerVersion(commandName: string, version: string): EffectGen<MissingCompletion, string>;
   /**
    * Removes the line wherever it is, and records that completion was turned off, so `setUpMissing` leaves it off
    * until `setUp` runs.

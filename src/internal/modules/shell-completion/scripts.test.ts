@@ -88,6 +88,31 @@ describe.skipIf(which("zsh") === null)("zsh", () => {
      _fixturecli_complete`,
   ], environment);
 
+  /**
+   * What an interactive zsh has registered for the command at its first prompt, after every startup file: a
+   * `compinit` resets every `compdef` made before it, which is how a block above a .zshrc's `compinit` used to lose
+   * its registration.
+   */
+  const registeredAtPrompt = async (name: string, compinitBefore: boolean, compinitAfter: boolean) => {
+    const environment = homeFor(name, "/bin/zsh");
+    const compinit = `autoload -Uz compinit && compinit -C -d "$ZDOTDIR/.zcompdump"\n`;
+    writeFileSync(join(environment["HOME"]!, ".zshrc"), compinitBefore ? compinit : "");
+    expect((await fixture(["--setup-completion"], environment)).exitCode).toBe(0);
+    if (compinitAfter) writeFileSync(join(environment["HOME"]!, ".zshrc"), readFileSync(join(environment["HOME"]!, ".zshrc"), "utf-8") + compinit);
+    const proc = Bun.spawn(["zsh", "-i"], { env: environment, stdin: new Blob(['print -r -- "registered:${_comps[fixturecli]}"; exit\n']), stdout: "pipe", stderr: "ignore" });
+    const [, stdout] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
+    return stdout.trim().split("\n").find((line) => line.startsWith("registered:"));
+  };
+
+  test("stays registered when the .zshrc runs compinit after the block", async () => {
+    expect(await registeredAtPrompt("zsh-compinit-after", false, true)).toBe("registered:_fixturecli_complete");
+  });
+
+  test("is registered when compinit runs before the block, and when nothing runs compinit", async () => {
+    expect(await registeredAtPrompt("zsh-compinit-before", true, false)).toBe("registered:_fixturecli_complete");
+    expect(await registeredAtPrompt("zsh-no-compinit", false, false)).toBe("registered:_fixturecli_complete");
+  });
+
   test("offers values with descriptions as _describe takes them", async () => {
     const environment = await setUpFor("zsh");
     expect(await tab(environment, [""])).toEqual(["load:Clone a repo", "provision"]);
@@ -149,6 +174,31 @@ describe("setting up missing completion from a real command", () => {
     expect(await fixture(["--setup-completion-if-missing"], env)).toEqual({ exitCode: 0, stdout: "", stderr: "" });
     expect(readFileSync(join(env["HOME"]!, ".zshrc"), "utf-8")).toBe("");
   });
+
+  /**
+   * The command itself, compiled as an installed command is, with no install script ever run (as when Bun skips it):
+   * its first run sets completion up, and later runs of the same version only read the version it recorded.
+   */
+  test("the first run of an installed command sets completion up, with no install script", async () => {
+    const compiledBin = join(root, "compiled-bin");
+    mkdirSync(compiledBin, { recursive: true });
+    const built = Bun.spawnSync([process.execPath, "build", "--compile", FIXTURE, "--outfile", join(compiledBin, "fixturecli")], { stdout: "pipe", stderr: "pipe" });
+    expect(built.exitCode).toBe(0);
+    const env = homeFor("first-run", "/bin/zsh", compiledBin);
+    const run = async () => {
+      const proc = Bun.spawn([join(compiledBin, "fixturecli"), "provision", "package"], { env, stdout: "pipe", stderr: "pipe" });
+      const [exitCode, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+      return { exitCode, stdout, stderr };
+    };
+    expect(await run()).toEqual({
+      exitCode: 0,
+      stdout: "",
+      stderr: `Set up Tab completion for fixturecli in ${join(env["HOME"]!, ".zshrc")}; it starts in new shells (turn it off with: fixturecli --remove-completion).\n`,
+    });
+    expect(readFileSync(join(env["HOME"]!, ".zshrc"), "utf-8")).toContain("# begin fixturecli completion");
+    expect(readFileSync(join(env["HOME"]!, ".jive", "completions", "fixturecli.checked"), "utf-8")).toBe("0.0.0\n");
+    expect(await run()).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+  }, 120_000);
 });
 
 describe("startup file editing", () => {

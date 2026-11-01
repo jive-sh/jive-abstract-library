@@ -30,8 +30,19 @@ ${fn}() {
 complete -F ${fn} ${command}
 `;
     case "zsh":
+      // A `compinit` later in the startup files resets every `compdef` before it, so the script registers at once
+      // when compinit has run and again once, before the first prompt, after every startup file: where its line
+      // sits in .zshrc never matters. Only when nothing ran compinit by then does it run compinit itself.
       return `${header}
-(( $+functions[compdef] )) || { autoload -Uz compinit && compinit; }
+${fn}_register() { compdef ${fn} ${command}; }
+(( $+functions[compdef] )) && ${fn}_register
+autoload -Uz add-zsh-hook
+${fn}_register_at_prompt() {
+  (( $+functions[compdef] )) || { autoload -Uz compinit && compinit; }
+  ${fn}_register
+  add-zsh-hook -d precmd ${fn}_register_at_prompt
+}
+add-zsh-hook precmd ${fn}_register_at_prompt
 ${fn}() {
   local -a specs
   local line value
@@ -46,7 +57,6 @@ ${fn}() {
   done
   _describe ${command} specs
 }
-compdef ${fn} ${command}
 `;
     case "fish":
       return `${header}

@@ -6,6 +6,7 @@ import { INSTALL_SCRIPT, LOCAL_ALIAS_SUFFIX, OUTDIR, REPAIR_ONLY_FLAG } from "..
 import type { DeployPlan } from "../../public/deploy-plan";
 import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS } from "../builder/interface";
+import type { PackedTarball } from "../npm/interface";
 import type { DeployInput, IDeployer, PlanInput } from "./interface";
 import { baseDistTag, baseVersion, baseVersionOf, platformDistTag, platformVersion } from "./versions";
 import { downloadTimesSummary, platformDownloadedLine, publishedBaseLine, publishingLine, type PlatformDownloadTime } from "./download-times";
@@ -87,6 +88,10 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
    * sooner than large platform packages, so the base is published only once every platform package
    * downloads. Packing has no such ordering, so all of it happens at once. When the package provisions
    * with Jive, that comes after packing and before the first publish, so a refusal leaves nothing published.
+   *
+   * A release can be run again after an earlier run of it stopped partway (cancelled by a newer push, or
+   * failed): the base package already listed means that run finished, and platform packages already listed
+   * are skipped when they hold this build's bytes (see `platformPackagesToPublish`).
    */
   private *publishRelease(input: {
     outDir: string; name: string; stampedBase: string; baseTag: string;
@@ -96,6 +101,15 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     const { outDir, name, stampedBase, baseTag, platformPackages, maybeJobSummaryPath, provisionWithJive } = input;
 
     const baseDir = resolve(outDir, BASE_PACKAGE_DIR);
+    const registry = yield* this.readPublishRegistry(baseDir);
+    const registryName = Option.getOrElse(registry, () => "npm's registry");
+
+    // `plan` asked the same question when the build ran; an earlier run of this release may have finished since.
+    if (yield* this.dependencies.Npm.versionExists({ spec: `${name}@${stampedBase}`, registry })) {
+      yield* Effect.log(`${name}@${stampedBase} is already on ${registryName}, so an earlier run released it and there is nothing to publish`);
+      return;
+    }
+
     yield* this.updateManifest(baseDir, {
       version: stampedBase,
       ...(platformPackages.length > 0
@@ -117,7 +131,9 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
       toPack.map((target) => effunct(this.packOne.bind(this))(outDir, target.label, target.packageDir)),
       { concurrency: toPack.length },
     );
-    const tarballOf = new Map(toPack.map((target, index) => [target.label, tarballs[index] as string]));
+    const tarballOf = new Map(toPack.map((target, index) => [target.label, tarballs[index] as PackedTarball]));
+
+    const unpublished = yield* this.platformPackagesToPublish({ name, registry, platformPackages, tarballOf });
 
     if (Option.isSome(provisionWithJive)) {
       yield* this.dependencies.JiveServer.provisionPackage({ serverUrl: provisionWithJive.value.serverUrl, registry: "npm", packageName: name });
@@ -127,32 +143,75 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     // publish of a new name is a create, and the registry refuses concurrent creates of one name
     // (403 "too similar to existing package", 409 "Failed to save packument"). So when the package does
     // not exist yet, one platform goes first and alone; once the registry shows it, the rest go in parallel.
-    if (platformPackages.length > 0) {
-      const [first, ...rest] = platformPackages;
-      let parallel = platformPackages;
+    if (unpublished.length > 0) {
+      const [first, ...rest] = unpublished;
+      let parallel = unpublished;
       const exists = yield* this.dependencies.Npm.packageExists(name);
       yield* Effect.log(exists
         ? `${name} exists on the registry, so every platform publishes in parallel`
         : `${name} does not exist on the registry yet, so ${first?.platform} publishes alone first to create it`);
       if (first !== undefined && !exists) {
-        yield* this.publishOne(first.platform, tarballOf.get(first.platform) as string, first.distTag);
+        yield* this.publishOne(first.platform, (tarballOf.get(first.platform) as PackedTarball).path, first.distTag);
         yield* this.waitUntilVisible(name);
         parallel = rest;
       }
       yield* Effect.log(`Publishing ${parallel.length} platform packages in parallel`);
       yield* Effect.all(
-        parallel.map((p) => effunct(this.publishOne.bind(this))(p.platform, tarballOf.get(p.platform) as string, p.distTag)),
+        parallel.map((p) => effunct(this.publishOne.bind(this))(p.platform, (tarballOf.get(p.platform) as PackedTarball).path, p.distTag)),
         { concurrency: parallel.length || 1 },
       );
     }
 
     if (platformPackages.length > 0) {
-      yield* this.waitUntilDownloadable({ name, version: stampedBase, baseDir, platformPackages, maybeJobSummaryPath });
+      yield* this.waitUntilDownloadable({ name, version: stampedBase, registry, platformPackages, maybeJobSummaryPath });
     }
 
     yield* Effect.log("Publishing base package");
-    yield* this.publishOne(BASE_PACKAGE_DIR, tarballOf.get(BASE_PACKAGE_DIR) as string, baseTag);
-    yield* Effect.log(`Published ${toPack.length} packages`);
+    yield* this.publishOne(BASE_PACKAGE_DIR, (tarballOf.get(BASE_PACKAGE_DIR) as PackedTarball).path, baseTag);
+    yield* Effect.log(`Published ${unpublished.length + 1} packages`);
+  }
+
+  /**
+   * The platform packages this release still has to publish. One the registry already lists at its version was
+   * published by an earlier run of this release that stopped before the base package, and npm refuses to publish
+   * over it. It is skipped when its `dist.integrity` matches the tarball this run packed: the same bytes, so that
+   * run's publish stands in for this one's. Any other integrity means that version holds a different build, and
+   * the release fails here, before anything is provisioned or published, since only a new version can release
+   * this build.
+   */
+  private *platformPackagesToPublish(input: {
+    name: string; registry: Option.Option<string>; platformPackages: ReadonlyArray<PlatformPackage>;
+    tarballOf: ReadonlyMap<string, PackedTarball>;
+  }): EffectGen<ReadonlyArray<PlatformPackage>, string> {
+    const { name, registry, platformPackages, tarballOf } = input;
+    const npm = this.dependencies.Npm;
+    const registryName = Option.getOrElse(registry, () => "npm's registry");
+    const publishedIntegrities = yield* Effect.all(
+      platformPackages.map((p) => effunct(npm.publishedIntegrity.bind(npm))({ spec: `${name}@${p.version}`, registry })),
+      { concurrency: platformPackages.length || 1 },
+    );
+
+    const unpublished: PlatformPackage[] = [];
+    const differing: string[] = [];
+    for (const [index, maybePublishedIntegrity] of publishedIntegrities.entries()) {
+      const platformPackage = platformPackages[index] as PlatformPackage;
+      const builtIntegrity = (tarballOf.get(platformPackage.platform) as PackedTarball).integrity;
+      if (Option.isNone(maybePublishedIntegrity)) {
+        unpublished.push(platformPackage);
+      } else if (maybePublishedIntegrity.value === builtIntegrity) {
+        yield* Effect.log(`  - ${platformPackage.platform} is already on ${registryName} with this build's contents, so it is not published again`);
+      } else {
+        differing.push(`${platformPackage.platform} (${name}@${platformPackage.version}): ${registryName} has ${maybePublishedIntegrity.value}, this build is ${builtIntegrity}`);
+      }
+    }
+    if (differing.length > 0) {
+      return yield* Effect.fail(
+        `${registryName} already lists ${differing.length} of this release's platform packages with contents other than this build's,`
+        + ` so nothing was published: ${differing.join("; ")}.`
+        + " npm never replaces a published version, so release this build under a new version in package.json.",
+      );
+    }
+    return unpublished;
   }
 
   /**
@@ -163,11 +222,10 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
    * download times it saw to the job summary.
    */
   private *waitUntilDownloadable(input: {
-    name: string; version: string; baseDir: string; platformPackages: ReadonlyArray<PlatformPackage>;
+    name: string; version: string; registry: Option.Option<string>; platformPackages: ReadonlyArray<PlatformPackage>;
     maybeJobSummaryPath: Option.Option<string>;
   }): EffectGen<void, string> {
-    const { name, version, baseDir, platformPackages, maybeJobSummaryPath } = input;
-    const registry = yield* this.readPublishRegistry(baseDir);
+    const { name, version, registry, platformPackages, maybeJobSummaryPath } = input;
     const npm = this.dependencies.Npm;
 
     yield* Effect.log(
@@ -248,10 +306,10 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     return yield* Effect.fail(`${name} was published but the registry still does not show it after 60 seconds`);
   }
 
-  private *packOne(outDir: string, label: string, packageDir: string): EffectGen<string, string> {
-    const tarballPath = yield* this.dependencies.Npm.pack(packageDir, outDir);
+  private *packOne(outDir: string, label: string, packageDir: string): EffectGen<PackedTarball, string> {
+    const tarball = yield* this.dependencies.Npm.pack(packageDir, outDir);
     yield* Effect.log(`  - ${label} packed`);
-    return tarballPath;
+    return tarball;
   }
 
   private *publishOne(label: string, tarballPath: string, distTag: string): EffectGen<void, string> {
@@ -300,7 +358,7 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     const baseTarball = yield* this.packOne(outDir, BASE_PACKAGE_DIR, baseDir);
 
     const alias = `${name}${LOCAL_ALIAS_SUFFIX}`;
-    yield* this.dependencies.Npm.installTarball({ alias, tarballPath: baseTarball });
+    yield* this.dependencies.Npm.installTarball({ alias, tarballPath: baseTarball.path });
     yield* Effect.log(`Installed ${alias}@${stampedBase} locally`);
 
     // The platform package has to be installed here too, not only referenced by the base manifest.
@@ -320,8 +378,8 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     yield* this.runInstallScript(alias);
 
     yield* pipe(
-      this.getDependency(FileSystem.FileSystem).remove(baseTarball, { force: true }),
-      Effect.mapError((e) => `Cannot remove ${baseTarball}: ${e.message}`),
+      this.getDependency(FileSystem.FileSystem).remove(baseTarball.path, { force: true }),
+      Effect.mapError((e) => `Cannot remove ${baseTarball.path}: ${e.message}`),
     );
   }
 

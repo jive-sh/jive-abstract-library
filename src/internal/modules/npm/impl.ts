@@ -6,9 +6,14 @@ import { resolve } from "node:path";
 import { NPM_PACKAGE_SPEC, NPM_WEBSITE_URL } from "../../common/constants";
 import type { DeployPlan } from "../../public/deploy-plan";
 import { libraryModules } from "../index";
-import { Availability, type INpm, type InstallTarballInput, type PublishInput } from "./interface";
+import { Availability, type INpm, type InstallTarballInput, type PackedTarball, type PublishInput } from "./interface";
 
 const TARBALL_REQUEST_TIMEOUT = "30 seconds";
+
+/** `npm pack --json` for one package directory: one entry, naming the tarball it wrote. */
+const PackOutput = Schema.fromJsonString(Schema.Tuple([
+  Schema.Struct({ filename: Schema.NonEmptyString, integrity: Schema.NonEmptyString }),
+]));
 
 /** npm asks its configured registry unless told the one a package publishes to. */
 const registryArgs = (registry: Option.Option<string>): ReadonlyArray<string> =>
@@ -28,7 +33,7 @@ export class NpmImpl extends implementing(libraryModules.Npm)
     return result.stdout.trim().split("\n").at(-1) ?? NPM_PACKAGE_SPEC;
   }
 
-  *pack(packageDir: string, outDir: string): EffectGen<string, string> {
+  *pack(packageDir: string, outDir: string): EffectGen<PackedTarball, string> {
     // npm keeps a copy of every tarball it packs in its cache, and a pack always starts from freshly
     // stamped files so that copy is never reused. A throwaway cache keeps it out of dist/, which is
     // uploaded as the deploy artifact, and out of the user's own ~/.npm.
@@ -47,17 +52,19 @@ export class NpmImpl extends implementing(libraryModules.Npm)
           "--ignore-scripts",
           "--cache", cacheDir,
           "--loglevel", "error",
+          "--json",
         ],
       });
       if (result.exitCode !== 0) {
         return yield* Effect.fail(`npm pack failed for ${packageDir}:\n${result.stderr.trim()}`);
       }
 
-      const fileName = result.stdout.trim().split("\n").at(-1);
-      if (!fileName) {
-        return yield* Effect.fail(`npm pack did not report an output file for ${packageDir}`);
+      const packed = Schema.decodeUnknownOption(PackOutput)(result.stdout.trim());
+      if (Option.isNone(packed)) {
+        return yield* Effect.fail(`npm pack did not report one tarball with its integrity for ${packageDir}:\n${result.stdout.trim()}`);
       }
-      return resolve(outDir, fileName);
+      const [{ filename, integrity }] = packed.value;
+      return { path: resolve(outDir, filename), integrity };
     } finally {
       yield* pipe(fs.remove(cacheDir, { recursive: true, force: true }), Effect.ignore);
     }
@@ -126,19 +133,28 @@ export class NpmImpl extends implementing(libraryModules.Npm)
   }
 
   *versionExists(input: { readonly spec: string; readonly registry: Option.Option<string> }): EffectGen<boolean, string> {
-    const { spec, registry } = input;
+    return Option.isSome(yield* this.viewField({ ...input, field: "version" }));
+  }
+
+  *publishedIntegrity(input: { readonly spec: string; readonly registry: Option.Option<string> }): EffectGen<Option.Option<string>, string> {
+    return yield* this.viewField({ ...input, field: "dist.integrity" });
+  }
+
+  /** One string field of `spec`'s registry entry; none when the registry does not list `spec`. */
+  private *viewField(input: { readonly spec: string; readonly field: string; readonly registry: Option.Option<string> }): EffectGen<Option.Option<string>, string> {
+    const { spec, field, registry } = input;
     const result = yield* this.dependencies.OSPlatform.spawnProcess({
       command: "bunx",
-      args: [NPM_PACKAGE_SPEC, "view", spec, "version", "--json", ...registryArgs(registry)],
+      args: [NPM_PACKAGE_SPEC, "view", spec, field, "--json", ...registryArgs(registry)],
     });
     const output = [result.stdout, result.stderr].join("\n").trim();
     if (result.exitCode !== 0) {
-      if (/\bE404\b/.test(output)) return false;
+      if (/\bE404\b/.test(output)) return Option.none();
       return yield* Effect.fail(`npm view failed for ${spec}:\n${output}`);
     }
-    const version = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.NonEmptyString))(result.stdout.trim());
-    if (Option.isNone(version)) return yield* Effect.fail(`npm view printed no version for ${spec}:\n${output}`);
-    return true;
+    const value = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.NonEmptyString))(result.stdout.trim());
+    if (Option.isNone(value)) return yield* Effect.fail(`npm view printed no ${field} for ${spec}:\n${output}`);
+    return value;
   }
 
   *planRelease(input: { readonly name: string; readonly version: string; readonly registry: Option.Option<string> }): EffectGen<DeployPlan, string> {

@@ -39,6 +39,10 @@ export interface IDeployer {
    * Stamps the built package folders with versions computed for this environment, then distributes
    * them: the local environment installs into the current workspace, every other environment packs,
    * asks Jive to provision the package when `provisionWithJive` is set, and publishes to npm.
+   *
+   * Running it again after an earlier run stopped partway finishes that release: a listed base package means
+   * there is nothing left to publish, and a listed platform package is skipped when its published integrity
+   * matches this run's tarball. When one does not match, it fails before publishing anything, naming both.
    */
   deploy(input: DeployInput): EffectGen<void, string>;
 }

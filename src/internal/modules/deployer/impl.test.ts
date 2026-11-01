@@ -21,13 +21,20 @@ const PLATFORMS = ["darwin-arm64", "linux-x64"] as const;
 /**
  * A built release of `PKG` 1.0.0 with two platform packages, and a fake npm that records each publish and
  * each availability check in `events`. `downloadableAfter` says how many checks of each platform package
- * find it not yet downloadable; a platform missing from it never downloads.
+ * find it not yet downloadable; a platform missing from it never downloads. Each tarball's integrity names
+ * the build and the folder it was packed from, so two fixtures with the same `build` pack the same bytes.
  */
 function release(input: {
   downloadableAfter: Partial<Record<(typeof PLATFORMS)[number], number>>;
   publishConfig?: object;
-  /** Specs (`<name>@<version>`) the fake registry already lists. */
+  /** Specs (`<name>@<version>`) the fake registry already lists, with contents from another build. */
   published?: ReadonlyArray<string>;
+  /** The fake registry, spec to integrity, to share it with an earlier run; publishing adds to it. */
+  registry?: Map<string, string>;
+  /** Which build this is; the default is `"a"`. */
+  build?: string;
+  /** A package (`base` or a platform) whose publish fails, as a run cancelled or failing there would stop. */
+  failingPublish?: string;
   /** Jive's answer when asked to provision; absent means it accepts. */
   provisionFailure?: string;
 }) {
@@ -42,15 +49,30 @@ function release(input: {
   const events: string[] = [];
   const registries: Array<Option.Option<string>> = [];
   const checks = new Map<string, number>();
+  const listed = input.registry ?? new Map((input.published ?? []).map((spec) => [spec, "sha512-another-build"]));
+  const packed = new Map<string, { spec: string; integrity: string }>();
   const npm = NpmImpl.mockLayer({
     *ensureAvailable() { return "11.0.0"; },
-    *pack(packageDir: string) { return `${packageDir}.tgz`; },
-    *publish({ tarballPath }: { tarballPath: string }) { events.push(`publish ${basename(tarballPath, ".tgz")}`); },
+    *pack(packageDir: string) {
+      const { name, version } = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+      const tarball = { path: `${packageDir}.tgz`, integrity: `sha512-${input.build ?? "a"}-${basename(packageDir)}` };
+      packed.set(tarball.path, { spec: `${name}@${version}`, integrity: tarball.integrity });
+      return tarball;
+    },
+    *publish({ tarballPath }: { tarballPath: string }) {
+      const label = basename(tarballPath, ".tgz");
+      events.push(`publish ${label}`);
+      if (label === input.failingPublish) return yield* Effect.fail(`npm publish failed for ${tarballPath} with exit code 1`);
+      const { spec, integrity } = packed.get(tarballPath)!;
+      listed.set(spec, integrity);
+    },
     *packageExists() { return true; },
+    *versionExists({ spec }: { spec: string }) { return listed.has(spec); },
+    *publishedIntegrity({ spec }: { spec: string }) { return Option.fromUndefinedOr(listed.get(spec)); },
     *planRelease({ name, version, registry }: { name: string; version: string; registry: Option.Option<string> }) {
       registries.push(registry);
       events.push(`planRelease ${name}@${version}`);
-      return (input.published ?? []).includes(`${name}@${version}`)
+      return listed.has(`${name}@${version}`)
         ? { deploy: false as const }
         : { deploy: true as const, url: `https://www.npmjs.com/package/${name}/v/${version}` };
     },
@@ -74,7 +96,7 @@ function release(input: {
     },
   });
   return {
-    dir, events, registries,
+    dir, events, registries, listed,
     layer: pipe(DeployerImpl.Layer, Layer.provideMerge(npm), Layer.provideMerge(jiveServer), Layer.provideMerge(osPlatform), Layer.provideMerge(BunFileSystem.layer)),
   };
 }
@@ -183,6 +205,63 @@ describe("publishing a release", () => {
     expect(Result.isSuccess(result)).toBe(true);
     expect(fixture.registries).toEqual([Option.some("https://registry.example/"), Option.some("https://registry.example/")]);
     expect(logs).toContain("Waiting for https://registry.example/ to serve all 2 platform packages before publishing the base package (checking every 10 seconds, for up to 15 minutes)");
+  });
+});
+
+describe("running a release again after an earlier run stopped partway", () => {
+  test("publishes what the earlier run left out, skipping platform packages it published with the same contents", async () => {
+    const registry = new Map<string, string>();
+    const first = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 0 }, registry, failingPublish: "linux-x64" });
+    const { result: firstResult } = await deploy(first, 10);
+    expect(Result.isFailure(firstResult)).toBe(true);
+    expect([...registry.keys()]).toEqual([`${PKG}@1.0.0-latest-darwin-arm64`]);
+
+    const rerun = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 0 }, registry });
+    const { result, logs } = await deploy(rerun, 10);
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(rerun.events).toEqual([
+      "publish linux-x64",
+      `check ${PKG}@1.0.0-latest-darwin-arm64`,
+      `check ${PKG}@1.0.0-latest-linux-x64`,
+      "publish base",
+    ]);
+    expect(logs).toContain("  - darwin-arm64 is already on npm's registry with this build's contents, so it is not published again");
+    expect(logs).toContain("Published 2 packages");
+    expect([...registry.keys()].sort()).toEqual([`${PKG}@1.0.0`, `${PKG}@1.0.0-latest-darwin-arm64`, `${PKG}@1.0.0-latest-linux-x64`]);
+  });
+
+  test("publishes only the base package when the earlier run published every platform package", async () => {
+    const registry = new Map<string, string>();
+    const first = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 0 }, registry, failingPublish: "base" });
+    await deploy(first, 10);
+
+    const rerun = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 0 }, registry });
+    const { result } = await deploy(rerun, 10);
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(rerun.events.filter((event) => event.startsWith("publish"))).toEqual(["publish base"]);
+  });
+
+  test("fails before provisioning or publishing anything when a published platform package holds another build", async () => {
+    const registry = new Map<string, string>();
+    const first = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 0 }, registry, failingPublish: "linux-x64" });
+    await deploy(first, 10);
+
+    const rerun = release({ downloadableAfter: { "darwin-arm64": 0, "linux-x64": 0 }, registry, build: "b" });
+    const { result } = await deploy(rerun, 10, false, Option.some({ serverUrl: "https://jive.example" }));
+    expect(rerun.events).toEqual([]);
+    expect(Result.isFailure(result) && result.failure).toBe(
+      "npm's registry already lists 1 of this release's platform packages with contents other than this build's, so nothing was published:"
+      + ` darwin-arm64 (${PKG}@1.0.0-latest-darwin-arm64): npm's registry has sha512-a-darwin-arm64, this build is sha512-b-darwin-arm64.`
+      + " npm never replaces a published version, so release this build under a new version in package.json.",
+    );
+  });
+
+  test("publishes nothing when the base package is already listed, since an earlier run finished the release", async () => {
+    const fixture = release({ downloadableAfter: {}, published: [`${PKG}@1.0.0`] });
+    const { result, logs } = await deploy(fixture, 0);
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(fixture.events).toEqual([]);
+    expect(logs).toContain(`${PKG}@1.0.0 is already on npm's registry, so an earlier run released it and there is nothing to publish`);
   });
 });
 

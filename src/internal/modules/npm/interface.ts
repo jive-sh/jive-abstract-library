@@ -8,6 +8,12 @@ export interface PublishInput {
   readonly tag: string;
 }
 
+/** A tarball `pack` wrote, with the integrity npm computed for it: the same `sha512-…` value a registry lists as `dist.integrity` once it is published. */
+export interface PackedTarball {
+  readonly path: string;
+  readonly integrity: string;
+}
+
 export interface InstallTarballInput {
   /** Name the tarball is installed under, so it can sit alongside the package it was built from. */
   readonly alias: string;
@@ -28,8 +34,8 @@ export interface INpm {
    * several concurrent resolutions of the same package race, and one of them loses.
    */
   ensureAvailable(): EffectGen<string, string>;
-  /** Packs a package directory into a tarball in outDir, returning its absolute path. */
-  pack(packageDir: string, outDir: string): EffectGen<string, string>;
+  /** Packs a package directory into a tarball in outDir, returning its absolute path and integrity. */
+  pack(packageDir: string, outDir: string): EffectGen<PackedTarball, string>;
   publish(input: PublishInput): EffectGen<void, string>;
   /**
    * Whether `spec` (`<name>@<version>`) can be installed from `registry` yet: the registry lists the version
@@ -44,6 +50,12 @@ export interface INpm {
    * found or 404 fails, since a wrong answer either republishes a version or skips a release.
    */
   versionExists(input: { readonly spec: string; readonly registry: Option.Option<string> }): EffectGen<boolean, string>;
+  /**
+   * The `dist.integrity` `registry` lists for `spec` (`<name>@<version>`), compared with a `PackedTarball`'s to
+   * tell whether a published version holds the same bytes. None when the registry does not list the version;
+   * anything but found or 404 fails, as for `versionExists`.
+   */
+  publishedIntegrity(input: { readonly spec: string; readonly registry: Option.Option<string> }): EffectGen<Option.Option<string>, string>;
   /**
    * What publishing `<name>@<version>` to `registry` would do: nothing when the registry already lists that
    * version, since npm refuses to publish over it; otherwise a deploy whose URL is the version's npm page.

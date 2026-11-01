@@ -115,9 +115,9 @@ export function publishPackage(target: ReleaseTarget): Effect.Effect<void, strin
         });
       }
       yield* Effect.log(`Packing ${target.version}`);
-      const tarballPath = yield* npm.pack(target.packageDir, target.outDir);
+      const tarball = yield* npm.pack(target.packageDir, target.outDir);
       yield* Effect.log(`Publishing ${target.version} under ${target.distTag}`);
-      yield* npm.publish({ tarballPath, tag: target.distTag });
+      yield* npm.publish({ tarballPath: tarball.path, tag: target.distTag });
       yield* Effect.log(`Published ${target.version}`);
     })(),
     Effect.provide(layer),

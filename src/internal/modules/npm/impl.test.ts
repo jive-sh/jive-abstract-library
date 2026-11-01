@@ -1,4 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Effect, Layer, Option, Result, pipe } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { FetchHttpClient } from "effect/http";
@@ -138,4 +142,59 @@ describe("planRelease", () => {
   test("fails when the registry cannot say", async () => {
     expect(Result.isFailure(await planRelease({ exitCode: 1, stdout: "", stderr: "npm error code ETIMEDOUT" }))).toBe(true);
   });
+});
+
+describe("publishedIntegrity", () => {
+  /** Asks for `SPEC`'s integrity with `npm view` answering `exitCode`, `stdout` and `stderr`; returns the outcome and npm's arguments. */
+  const publishedIntegrity = async (input: { exitCode: number; stdout: string; stderr: string }) => {
+    const argv: string[] = [];
+    const osPlatform = OSPlatformImpl.mockLayer({
+      *spawnProcess(spawn: SpawnProcessInput) {
+        argv.push(spawn.command, ...(spawn.args ?? []));
+        return input;
+      },
+    });
+    const result = await Effect.runPromise(pipe(
+      effunct(function* () {
+        return yield* (yield* libraryModules.Npm).publishedIntegrity({ spec: SPEC, registry: Option.none() });
+      })(),
+      Effect.provide(pipe(NpmImpl.Layer, Layer.provideMerge(osPlatform), Layer.provideMerge(BunFileSystem.layer), Layer.provideMerge(FetchHttpClient.layer))),
+      Effect.result,
+    ));
+    return { result, argv };
+  };
+
+  test("is the dist.integrity the registry lists for the version", async () => {
+    const { result, argv } = await publishedIntegrity({ exitCode: 0, stdout: '"sha512-abc=="\n', stderr: "" });
+    expect(result).toEqual(Result.succeed(Option.some("sha512-abc==")));
+    expect(argv).toContain("dist.integrity");
+  });
+
+  test("is none when the registry does not list the version", async () => {
+    const { result } = await publishedIntegrity({ exitCode: 1, stdout: "", stderr: "npm error code E404\nnpm error 404 No match found for version 1.0.0" });
+    expect(result).toEqual(Result.succeed(Option.none()));
+  });
+
+  test("fails on any other npm error rather than guessing", async () => {
+    const { result } = await publishedIntegrity({ exitCode: 1, stdout: "", stderr: "npm error code ETIMEDOUT" });
+    expect(Result.isFailure(result) && result.failure).toBe(`npm view failed for ${SPEC}:\nnpm error code ETIMEDOUT`);
+  });
+});
+
+describe("pack", () => {
+  test("reports the integrity a registry lists once the tarball is published: sha512 of its bytes", async () => {
+    const packageDir = mkdtempSync(join(tmpdir(), "npm-pack-test-package-"));
+    const outDir = mkdtempSync(join(tmpdir(), "npm-pack-test-out-"));
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "@test/demo", version: "1.0.0-latest-linux-x64" }));
+    writeFileSync(join(packageDir, "binary"), "pretend this is a compiled executable");
+
+    const tarball = await Effect.runPromise(pipe(
+      effunct(function* () {
+        return yield* (yield* libraryModules.Npm).pack(packageDir, outDir);
+      })(),
+      Effect.provide(pipe(NpmImpl.Layer, Layer.provideMerge(OSPlatformImpl.Layer), Layer.provideMerge(BunFileSystem.layer), Layer.provideMerge(FetchHttpClient.layer))),
+    ));
+    expect(tarball.path).toBe(join(outDir, "test-demo-1.0.0-latest-linux-x64.tgz"));
+    expect(tarball.integrity).toBe(`sha512-${createHash("sha512").update(readFileSync(tarball.path)).digest("base64")}`);
+  }, 120_000);
 });

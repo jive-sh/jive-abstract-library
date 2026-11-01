@@ -6,12 +6,11 @@ import { DaemonImpl } from "../modules/daemon/impl";
 import { DeployerImpl } from "../modules/deployer/impl";
 import { GitImpl } from "../modules/git/impl";
 import { InstalledPackageImpl } from "../modules/installed-package/impl";
-import { provisioningLayer } from "../modules/jive-server/jive-cli";
+import { JiveCliProvisioningImpl } from "../modules/jive-server/impl";
 import { JsonSchemaImpl } from "../modules/json-schema/impl";
 import { NpmImpl } from "../modules/npm/impl";
 import { OSPlatformImpl } from "../modules/os-platform/impl";
 import { PackageImpl } from "../modules/package/impl";
-import { PipelineIdentityImpl } from "../modules/pipeline-identity/impl";
 import { ShellCompletionImpl } from "../modules/shell-completion/impl";
 
 /**
@@ -20,8 +19,7 @@ import { ShellCompletionImpl } from "../modules/shell-completion/impl";
  */
 export const layerLive = pipe(
   DeployerImpl.Layer,
-  Layer.provideMerge(provisioningLayer),
-  Layer.provideMerge(PipelineIdentityImpl.Layer),
+  Layer.provideMerge(JiveCliProvisioningImpl.Layer),
   Layer.provideMerge(BuilderImpl.Layer),
   Layer.provideMerge(ShellCompletionImpl.Layer),
   Layer.provideMerge(DaemonImpl.Layer),

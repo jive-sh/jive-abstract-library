@@ -8,7 +8,6 @@ import type { INpm } from "./npm/interface";
 import type { IDeployer } from "./deployer/interface";
 import type { IDaemon } from "./daemon/interface";
 import type { IInstalledPackage } from "./installed-package/interface";
-import type { IPipelineIdentity } from "./pipeline-identity/interface";
 import type { IJiveServer } from "./jive-server/interface";
 import type { IShellCompletion } from "./shell-completion/interface";
 
@@ -22,7 +21,6 @@ export enum LibraryModules {
   Deployer = "Deployer",
   Daemon = "Daemon",
   InstalledPackage = "InstalledPackage",
-  PipelineIdentity = "PipelineIdentity",
   JiveServer = "JiveServer",
   ShellCompletion = "ShellCompletion",
 }
@@ -37,7 +35,6 @@ export const libraryModules = interfaces<LibraryModules, {
   Deployer: IDeployer;
   Daemon: IDaemon;
   InstalledPackage: IInstalledPackage;
-  PipelineIdentity: IPipelineIdentity;
   JiveServer: IJiveServer;
   ShellCompletion: IShellCompletion;
 }>(LibraryModules);

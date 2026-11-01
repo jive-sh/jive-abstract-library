@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, w
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { Effect, Option, Result } from "effect";
-import { JIVE_CLI_PACKAGE } from "../modules/jive-server/jive-cli";
+import { JIVE_CLI_PACKAGE } from "../modules/jive-server/impl";
 import { publishPackage } from "./release";
 
 /**

@@ -6,10 +6,9 @@ import type { DeployPlan } from "./deploy-plan";
 import type { ProvisionWithJive } from "./manifest";
 import { resolve } from "node:path";
 import { libraryModules } from "../modules";
-import { provisioningLayer } from "../modules/jive-server/jive-cli";
+import { JiveCliProvisioningImpl } from "../modules/jive-server/impl";
 import { NpmImpl } from "../modules/npm/impl";
 import { OSPlatformImpl } from "../modules/os-platform/impl";
-import { PipelineIdentityImpl } from "../modules/pipeline-identity/impl";
 import { baseDistTag, baseVersion } from "../modules/deployer/versions";
 
 /**
@@ -19,8 +18,7 @@ import { baseDistTag, baseVersion } from "../modules/deployer/versions";
  */
 
 const layer = pipe(
-  provisioningLayer,
-  Layer.provideMerge(PipelineIdentityImpl.Layer),
+  JiveCliProvisioningImpl.Layer,
   Layer.provideMerge(NpmImpl.Layer),
   Layer.provideMerge(OSPlatformImpl.Layer),
   Layer.provideMerge(BunFileSystem.layer),
@@ -108,11 +106,7 @@ export function publishPackage(target: ReleaseTarget): Effect.Effect<void, strin
       }
 
       if (Option.isSome(target.provisionWithJive)) {
-        yield* (yield* libraryModules.JiveServer).provisionPackage({
-          serverUrl: target.provisionWithJive.value.serverUrl,
-          registry: "npm",
-          packageName: name,
-        });
+        yield* (yield* libraryModules.JiveServer).provisionPackage({ packageName: name });
       }
       yield* Effect.log(`Packing ${target.version}`);
       const tarball = yield* npm.pack(target.packageDir, target.outDir);

@@ -10,7 +10,7 @@ import { libraryModules } from "../index";
 import { NpmImpl } from "../npm/impl";
 import { Availability } from "../npm/interface";
 import { OSPlatformImpl } from "../os-platform/impl";
-import { JiveServerImpl } from "../jive-server/impl";
+import { JiveCliProvisioningImpl } from "../jive-server/impl";
 import type { ProvisionPackageInput } from "../jive-server/interface";
 import { DeployerImpl } from "./impl";
 import { parseReleaseDownloadTimes } from "./download-times";
@@ -89,9 +89,9 @@ function release(input: {
     },
   });
   const osPlatform = OSPlatformImpl.mockLayer({ *getCurrentDirectory() { return dir; } });
-  const jiveServer = JiveServerImpl.mockLayer({
-    *provisionPackage({ serverUrl, registry, packageName }: ProvisionPackageInput) {
-      events.push(`provision ${registry} ${packageName} at ${serverUrl}`);
+  const jiveServer = JiveCliProvisioningImpl.mockLayer({
+    *provisionPackage({ packageName }: ProvisionPackageInput) {
+      events.push(`provision ${packageName}`);
       if (input.provisionFailure !== undefined) return yield* Effect.fail(input.provisionFailure);
     },
   });
@@ -273,7 +273,7 @@ describe("provisioning with Jive", () => {
     const { result } = await deploy(fixture, 10, false, server);
     expect(Result.isSuccess(result)).toBe(true);
     expect(fixture.events.slice(0, 3)).toEqual([
-      `provision npm ${PKG} at https://jive.example`,
+      `provision ${PKG}`,
       "publish darwin-arm64",
       "publish linux-x64",
     ]);

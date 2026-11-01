@@ -136,7 +136,7 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
     const unpublished = yield* this.platformPackagesToPublish({ name, registry, platformPackages, tarballOf });
 
     if (Option.isSome(provisionWithJive)) {
-      yield* this.dependencies.JiveServer.provisionPackage({ serverUrl: provisionWithJive.value.serverUrl, registry: "npm", packageName: name });
+      yield* this.dependencies.JiveServer.provisionPackage({ packageName: name });
     }
 
     // Platform packages publish under the base package's own name, told apart by version. The first

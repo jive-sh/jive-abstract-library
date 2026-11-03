@@ -44,3 +44,15 @@ test("the hook logger prints every level's message alone on stderr", async () =>
     { stream: "stderr", text: "broken\n" },
   ]);
 });
+
+test("the terminal logger ends quietly when its reader stops early, as in `cli list | head -1`", async () => {
+  const loggerPath = new URL("./logger.ts", import.meta.url).pathname;
+  const program = `import { Effect, pipe } from "effect";
+import { terminalLogger } from ${JSON.stringify(loggerPath)};
+await Effect.runPromise(pipe(Effect.forEach(Array.from({ length: 20000 }, (_, i) => i), (i) => Effect.log("line " + i)), Effect.provide(terminalLogger)));`;
+  const child = Bun.spawn(["bun", "-e", program], { cwd: import.meta.dir, stdout: "pipe", stderr: "pipe" });
+  const reader = child.stdout.getReader();
+  await reader.read();
+  await reader.cancel();
+  expect({ exitCode: await child.exited, stderr: await new Response(child.stderr).text() }).toEqual({ exitCode: 0, stderr: "" });
+});

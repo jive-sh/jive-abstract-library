@@ -59,6 +59,8 @@ export function complete(cli: Cli<any, any>, words: ReadonlyArray<string>): Effe
 }
 
 function completeCommand(command: Command<any, any, any>, typed: ReadonlyArray<string>, current: string): Effect.Effect<Completion, never, any> {
+  // What the words mean is up to the program it runs.
+  if (command.passesWordsThrough) return Effect.succeed(NOTHING);
   const flags: FlagSet = command.flags;
   const given = new Set<string>();
   for (let i = 0; i < typed.length; i++) {

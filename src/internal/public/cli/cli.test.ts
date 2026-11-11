@@ -57,6 +57,10 @@ const jive = Cli.make("jive", {
   provision: {
     package: Cli.command({ *run() {} }),
   },
+  ssh: Cli.passThroughCommand({
+    description: "Run ssh with these words",
+    *run({ args }) { yield* (yield* Repos).load({ org: "ssh", repo: JSON.stringify(args), shallow: false, branch: Option.none() }); },
+  }),
 });
 
 // The types the tree infers, exactly (an `any` would pass a plain assignment): `run`'s failures, and every
@@ -126,6 +130,47 @@ describe("running a command", () => {
   });
 });
 
+describe("a pass-through command", () => {
+  const passed = async (args: ReadonlyArray<string>) => {
+    const { exit, loaded } = await invoke(["ssh", ...args]);
+    expect(Exit.isSuccess(exit)).toBe(true);
+    return loaded;
+  };
+
+  test("gets every word after it as typed: flags, values, --, and --help after the first word", async () => {
+    const words = ["user@host", "-p", "2222", "--port=1", "-", "--", "-h", "--help", "a b"];
+    expect(await passed(words)).toEqual([{ org: "ssh", repo: JSON.stringify(words), shallow: false, branch: Option.none() }]);
+  });
+
+  test("runs with no words at all", async () => {
+    expect(await passed([])).toEqual([{ org: "ssh", repo: "[]", shallow: false, branch: Option.none() }]);
+  });
+
+  test("shows its own help for --help or -h as the first word, and runs nothing", async () => {
+    for (const flag of ["--help", "-h"]) {
+      const { stdout, exit, loaded } = await invoke(["ssh", flag, "user@host"]);
+      expect(Exit.isSuccess(exit)).toBe(true);
+      expect(loaded).toEqual([]);
+      expect(stdout).toBe([
+        "Usage: jive ssh [<arguments>…]",
+        "",
+        "Run ssh with these words",
+        "",
+        "Every word after 'jive ssh' goes to the program it runs, flags included; only --help or -h as the first word shows this help.",
+        "",
+      ].join("\n"));
+    }
+  });
+
+  test("Tab offers nothing after it, a '-' included", async () => {
+    for (const current of ["", "-", "--"]) {
+      const { stdout, exit } = await invoke(["--compgen", "ssh", "user@host", current]);
+      expect(Exit.isSuccess(exit)).toBe(true);
+      expect(stdout).toBe("");
+    }
+  });
+});
+
 describe("usage errors", () => {
   for (const [args, message] of [
     [["lod"], "Unknown command 'lod' for 'jive'."],
@@ -159,6 +204,7 @@ describe("help and version", () => {
       "Commands:",
       "  load        Clone a repo into the workspace",
       "  provision",
+      "  ssh         Run ssh with these words",
       "",
       "Flags:",
       "  --help, -h            Show this help",
@@ -218,7 +264,7 @@ describe("Tab completion (--compgen)", () => {
   };
 
   test("offers a group's subcommands with their descriptions", async () => {
-    expect((await completes("")).lines).toEqual(["load\tClone a repo into the workspace", "provision"]);
+    expect((await completes("")).lines).toEqual(["load\tClone a repo into the workspace", "provision", "ssh\tRun ssh with these words"]);
     expect((await completes("pro")).lines).toEqual(["provision"]);
     expect((await completes("provision", "")).lines).toEqual(["package"]);
   });

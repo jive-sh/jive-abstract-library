@@ -51,7 +51,7 @@ export interface CommandInput<Flags extends FlagSet> {
 
 /**
  * A command that runs. `E` is what its `run` can fail with; `R` is the services its `run` and its flags'
- * `choices` need.
+ * `choices` need. `passesWordsThrough` is true for a `passThroughCommand`.
  */
 export class Command<Flags extends FlagSet, E, R> {
   readonly _tag = "Command";
@@ -61,6 +61,7 @@ export class Command<Flags extends FlagSet, E, R> {
     readonly description: Option.Option<string>,
     readonly flags: Flags,
     readonly run: (input: CommandInput<Flags>) => Generator<AnyEffect, void, never>,
+    readonly passesWordsThrough: boolean,
   ) {}
 }
 
@@ -133,6 +134,24 @@ export function command<const Flags extends FlagSet = {}, Eff extends AnyEffect 
     Option.fromUndefinedOr(options.description),
     options.flags ?? ({} as Flags),
     (input) => options.run(input),
+    false,
+  );
+}
+
+/**
+ * A command that runs another program with the words typed after it, exactly as typed: `-p 2222`, `--` and any other
+ * flag are the program's, so it declares no flags of its own. Only `--help` or `-h` as the first word shows the
+ * command's own help; anywhere after that it goes to the program too.
+ */
+export function passThroughCommand<Eff extends AnyEffect = never>(options: {
+  readonly description?: string;
+  run(input: { readonly args: ReadonlyArray<string> }): Generator<Eff, void, never>;
+}): Command<{}, ErrorOf<NoInfer<Eff>>, ServicesOf<NoInfer<Eff>>> {
+  return new Command(
+    Option.fromUndefinedOr(options.description),
+    {},
+    ({ args }) => options.run({ args }),
+    true,
   );
 }
 

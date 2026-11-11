@@ -118,6 +118,12 @@ export function parseInvocation(cli: Cli<any, any>, words: ReadonlyArray<string>
   }
 
   const command = node;
+  if (command.passesWordsThrough) {
+    const first = words[index];
+    return first !== undefined && HELP_FLAGS.includes(first)
+      ? Invocation.Help({ node: command, path })
+      : Invocation.Execute({ command, path, flags: {}, args: words.slice(index) });
+  }
   const maybeInvalid = invalidFlagNames(command);
   if (Option.isSome(maybeInvalid)) return Invocation.InvalidDefinition({ message: maybeInvalid.value });
 

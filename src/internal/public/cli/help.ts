@@ -40,6 +40,13 @@ function groupHelp(group: Group, path: ReadonlyArray<string>, isRoot: boolean): 
 }
 
 function commandHelp(command: Command<any, any, any>, path: ReadonlyArray<string>): string {
+  if (command.passesWordsThrough) {
+    return sections([
+      `Usage: ${[...path, "[<arguments>…]"].join(" ")}`,
+      ...Option.toArray(command.description),
+      `Every word after '${path.join(" ")}' goes to the program it runs, flags included; only ${HELP_FLAGS.join(" or ")} as the first word shows this help.`,
+    ]);
+  }
   const flags: FlagSet = command.flags;
   const declared = Object.entries(flags).map(([name, flag]) => [
     flag._tag === "BooleanFlag" ? `--${name}` : `--${name} <value>`,

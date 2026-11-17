@@ -28,7 +28,7 @@ const {
   writeFileSync,
 } = require("fs");
 const { createHash } = require("crypto");
-const { homedir } = require("os");
+const { homedir, userInfo } = require("os");
 const { basename, delimiter, dirname, join } = require("path");
 
 const PLATFORM_MAP = <%- json(platformMap) %>;
@@ -227,8 +227,9 @@ function setUpMissingCompletion() {
 /**
  * Registering a package's daemons with the operating system so they start at login.
  *
- * At login, not at boot: a daemon here acts for one user, with access to that user's keychain, SSH agent
- * and home directory, and a system-wide service would have none of those. On Windows that is a scheduled
+ * As the user, not system-wide: a daemon here acts for one user, with access to that user's keychain, SSH agent
+ * and home directory, and a system-wide service would have none of those. On macOS and Windows it starts at
+ * login; on Linux at boot, because the user is made to linger (registerSystemd). On Windows that is a scheduled
  * task rather than a service for the same reason — a service runs in session 0, isolated from the desktop
  * the user is actually logged into.
  *
@@ -375,7 +376,15 @@ function registerLaunchd(id, name, executable, workingDirectory, logPath) {
   return { kind: "launchd", unit: label, files: [plistPath], unregister, started };
 }
 
-/** systemd user units. \`--user\` rather than system units, for the same reason launchd gets a LaunchAgent. */
+/**
+ * systemd user units. \`--user\` rather than system units, for the same reason launchd gets a LaunchAgent.
+ *
+ * A user's systemd manager, and every unit in it, stops when their last session ends and starts again at their next
+ * login, unless the user lingers. On a server nobody stays logged in to, the daemons would be down most of the time,
+ * so the user is made to linger, which starts their manager at boot. systemd lets every user set their own
+ * (polkit's org.freedesktop.login1.set-self-linger), with no password. Removing a registration leaves lingering on:
+ * something else of the user's may rely on it, and it costs only their manager running.
+ */
 function registerSystemd(id, name, executable, workingDirectory, logPath) {
   const unit = \`\${id}.service\`;
   const unitDir = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "systemd", "user");
@@ -393,12 +402,17 @@ function registerSystemd(id, name, executable, workingDirectory, logPath) {
     \`WorkingDirectory=\${workingDirectory}\`,
     "Restart=on-failure",
     "RestartSec=5",
+    \`StandardOutput=append:\${logPath}\`,
+    \`StandardError=append:\${logPath}\`,
     "",
     "[Install]",
     "WantedBy=default.target",
     "",
   ].join("\\n"));
 
+  if (!run(["loginctl", "enable-linger", "--no-ask-password"], false)) {
+    console.error(\`  \${unit} stops whenever you have no session open; \\\`sudo loginctl enable-linger \${userInfo().username}\\\` keeps it running\`);
+  }
   run(["systemctl", "--user", "daemon-reload"], true);
   // Restart rather than \`enable --now\`, which leaves a running daemon on the executable it started from:
   // after an upgrade that is the old version, held open after its file was replaced.

@@ -56,7 +56,7 @@ export {
   type PackageJsonSchemaGenerator,
 } from "./internal/public/dev-server";
 
-export { daemonStatuses, exitWhenUninstalled } from "./internal/public/daemon";
+export { daemonStatuses, exitWhenUninstalled, repairDaemonRecords } from "./internal/public/daemon";
 
 export { upgrade, type UpgradeOptions } from "./internal/public/upgrade";
 export { autoUpgrade, type AutoUpgradeOptions } from "./internal/public/auto-upgrade";

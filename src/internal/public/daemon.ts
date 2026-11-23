@@ -67,7 +67,8 @@ function* supervise(): EffectGen<void, string, LibraryModules.Daemon | FileSyste
 }
 
 /**
- * Every Jive daemon registered on this machine, with whether it is actually running.
+ * Every Jive daemon registered on this machine, with whether it is actually running. Read-only: a record that is not
+ * a complete registration is left out with a warning, never repaired, so a daemon can call this safely.
  *
  * Offered from here rather than left to each CLI because this package writes the registry: a second
  * implementation of "where the records live and what they mean" would be a second thing to keep in step
@@ -77,6 +78,22 @@ export const daemonStatuses: Effect.Effect<ReadonlyArray<DaemonStatus>, string> 
   effunct(collectStatuses)(),
   Effect.provide(layer),
 );
+
+/**
+ * Fixes the broken records `daemonStatuses` would skip, where it can (`IDaemon.repairBrokenRecords`): deletes one whose
+ * package is gone, and reruns the `install.cjs` of one whose package still has it, which restarts that package's daemons.
+ *
+ * For a person's listing command to run before `daemonStatuses`, never for a daemon: a daemon calling it would run
+ * other packages' installers and restart their daemons.
+ */
+export const repairDaemonRecords: Effect.Effect<void, string> = pipe(
+  effunct(repairRecords)(),
+  Effect.provide(layer),
+);
+
+function* repairRecords(): EffectGen<void, string, LibraryModules.Daemon> {
+  yield* (yield* libraryModules.Daemon).repairBrokenRecords();
+}
 
 function* collectStatuses(): EffectGen<ReadonlyArray<DaemonStatus>, string, LibraryModules.Daemon> {
   const daemon = yield* libraryModules.Daemon;

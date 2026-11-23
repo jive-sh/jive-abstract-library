@@ -67,9 +67,21 @@ export interface IDaemon {
   /**
    * Every daemon registered on this machine, by any package, sorted by id. Reading the registry rather
    * than the service manager: the registry is the one cross-platform list, and it is written by whoever
-   * installed each daemon.
+   * installed each daemon. A record that is not a complete registration (not JSON, or missing a field such as
+   * the kind and unit an interrupted install never wrote) is left out with a warning naming its path, so one bad
+   * record never hides the others.
    */
   list(): EffectGen<ReadonlyArray<DaemonRegistration>, string>;
+  /**
+   * Fixes each record `list` would skip, where it can: a record whose package directory is gone is deleted, and
+   * one whose package directory still holds its `install.cjs` is rewritten by running that installer (once per
+   * package directory), which registers the package's daemons again. Each repair or removal is logged with the
+   * record's path; a record it cannot fix is left for `list` to report.
+   *
+   * Separate from `list` because it starts installers, which restart daemons: a person's listing command may do
+   * that, but a daemon must not, whether checking its own registration every minute or listing daemons at startup.
+   */
+  repairBrokenRecords(): EffectGen<void, string>;
   /** Asks the service manager that holds a registration whether it is running. */
   status(registration: DaemonRegistration): EffectGen<DaemonStatus, string>;
   /**

@@ -51,7 +51,6 @@ const DAEMON_REGISTRY_SUBDIR = <%- json(daemonRegistrySubdir) %>;
 const DAEMON_LOG_SUBDIR = <%- json(daemonLogSubdir) %>;
 const REPAIR_ONLY_FLAG = <%- json(repairOnlyFlag) %>;
 const BIN_DIR = <%- json(binDir) %>;
-const INSTALL_SCRIPT = <%- json(installScript) %>;
 // Root install.cjs repairs command targets; bin launchers repair and then execute.
 const IS_INSTALL_SCRIPT = <%- json(isInstallScript) %>;
 const WINDOWS_EXECUTABLE_SUFFIX = <%- json(windowsExecutableSuffix) %>;
@@ -62,7 +61,6 @@ const launcherPath = realpathSync(__filename);
 const launcherDir = dirname(launcherPath);
 const packageDir = IS_INSTALL_SCRIPT ? launcherDir : dirname(launcherDir);
 const commandTargetDir = join(packageDir, BIN_DIR);
-const rootInstallScriptPath = join(packageDir, INSTALL_SCRIPT);
 
 function fail(message) {
   console.error(message);
@@ -194,15 +192,6 @@ function runExecutable(executablePath) {
   }
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
-  }
-}
-
-function removeInstallScript() {
-  try {
-    rmSync(rootInstallScriptPath, { force: true });
-    // TODO: should we also remove the postinstall script line from package.json?
-  } catch {
-    // Cleanup is best-effort; failing to remove install.cjs should not fail package installation.
   }
 }
 
@@ -362,18 +351,21 @@ function registerLaunchd(id, name, executable, workingDirectory, logPath) {
     "",
   ].join("\\n"));
 
-  // Booting out first: bootstrap refuses a label that is already loaded, and a reinstall is the common case.
-  // bootout returns before launchd has finished stopping a daemon that is running, and bootstrap is refused
-  // until it has ("Bootstrap failed: 5"), so a reinstall over a live daemon left it stopped until the next
-  // login. Retry for a few seconds; only the last failure is reported.
-  run(unregister, true);
-  const attempts = 20;
-  let started = false;
-  for (let attempt = 1; attempt <= attempts && !started; attempt++) {
-    if (attempt > 1) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
-    started = run(["launchctl", "bootstrap", domain, plistPath], attempt < attempts);
-  }
-  return { kind: "launchd", unit: label, files: [plistPath], unregister, started };
+  const start = () => {
+    // Booting out first: bootstrap refuses a label that is already loaded, and a reinstall is the common case.
+    // bootout returns before launchd has finished stopping a daemon that is running, and bootstrap is refused
+    // until it has ("Bootstrap failed: 5"), so a reinstall over a live daemon left it stopped until the next
+    // login. Retry for a few seconds; only the last failure is reported.
+    run(unregister, true);
+    const attempts = 20;
+    let started = false;
+    for (let attempt = 1; attempt <= attempts && !started; attempt++) {
+      if (attempt > 1) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+      started = run(["launchctl", "bootstrap", domain, plistPath], attempt < attempts);
+    }
+    return started;
+  };
+  return { kind: "launchd", unit: label, files: [plistPath], unregister, start };
 }
 
 /**
@@ -410,15 +402,17 @@ function registerSystemd(id, name, executable, workingDirectory, logPath) {
     "",
   ].join("\\n"));
 
-  if (!run(["loginctl", "enable-linger", "--no-ask-password"], false)) {
-    console.error(\`  \${unit} stops whenever you have no session open; \\\`sudo loginctl enable-linger \${userInfo().username}\\\` keeps it running\`);
-  }
-  run(["systemctl", "--user", "daemon-reload"], true);
-  // Restart rather than \`enable --now\`, which leaves a running daemon on the executable it started from:
-  // after an upgrade that is the old version, held open after its file was replaced.
-  const started = run(["systemctl", "--user", "enable", unit], false)
-    && run(["systemctl", "--user", "restart", unit], false);
-  return { kind: "systemd", unit, files: [unitPath], unregister, started };
+  const start = () => {
+    if (!run(["loginctl", "enable-linger", "--no-ask-password"], false)) {
+      console.error(\`  \${unit} stops whenever you have no session open; \\\`sudo loginctl enable-linger \${userInfo().username}\\\` keeps it running\`);
+    }
+    run(["systemctl", "--user", "daemon-reload"], true);
+    // Restart rather than \`enable --now\`, which leaves a running daemon on the executable it started from:
+    // after an upgrade that is the old version, held open after its file was replaced.
+    return run(["systemctl", "--user", "enable", unit], false)
+      && run(["systemctl", "--user", "restart", unit], false);
+  };
+  return { kind: "systemd", unit, files: [unitPath], unregister, start };
 }
 
 /**
@@ -446,14 +440,14 @@ function registerScheduledTask(id, name, executable, workingDirectory, logPath) 
   ].join("\\r\\n"));
 
   // An ONLOGON task waits for the next login, so it is also run now, as launchd and systemd start theirs.
-  const started = run([
+  const start = () => run([
     "schtasks", "/Create", "/F",
     "/SC", "ONLOGON",
     "/TN", taskName,
     "/TR", \`"\${shimPath}"\`,
     "/RL", "LIMITED",
   ], false) && run(["schtasks", "/Run", "/TN", taskName], false);
-  return { kind: "scheduled-task", unit: taskName, files: [shimPath], unregister, started };
+  return { kind: "scheduled-task", unit: taskName, files: [shimPath], unregister, start };
 }
 
 const DAEMON_REGISTRARS = {
@@ -561,9 +555,12 @@ function registerDaemons() {
       + \` (\${name} from \${PACKAGE_NAME}) in \${workingDirectory}\`,
     );
 
-    // The record goes down before the unit is loaded, because loading it starts the daemon, and the first
-    // thing the daemon does is read this file to find out how it was registered.
-    const pending = {
+    // The registrar writes its unit file and says how it will be loaded; the record goes down, whole, before the
+    // unit is loaded, because loading it starts the daemon, and the first thing the daemon does is read this file
+    // to find out how it was registered. Whole, so an install stopped at any point leaves either the previous
+    // record or this one, never one missing the kind and unit a listing command asks the platform about.
+    const registration = registrar(id, name, executable, workingDirectory, logPath);
+    writeFileSync(path, \`\${JSON.stringify({
       id,
       name,
       packageName: PACKAGE_NAME,
@@ -572,32 +569,24 @@ function registerDaemons() {
       executable,
       registeredAt: new Date().toISOString(),
       searchPath: [...new Set((process.env.PATH || "").split(delimiter).filter(Boolean))].join(delimiter),
-      files: [path],
-      unregister: previous && previous.unregister ? previous.unregister : [],
-    };
-    writeFileSync(path, \`\${JSON.stringify(pending, null, 2)}\\n\`);
-
-    const outcome = registrar(id, name, executable, workingDirectory, logPath);
-    // kind and unit are recorded for the sake of reading a daemon's status later: they are what a listing
-    // command has to ask the platform about, and only the installer knows which registrar ran.
-    writeFileSync(path, \`\${JSON.stringify({
-      ...pending,
-      kind: outcome.kind,
-      unit: outcome.unit,
+      kind: registration.kind,
+      unit: registration.unit,
       logPath,
-      files: [...outcome.files, path],
-      unregister: outcome.unregister,
+      files: [...registration.files, path],
+      unregister: registration.unregister,
     }, null, 2)}\\n\`);
 
-    if (!outcome.started) {
+    if (!registration.start()) {
       console.error(\`  \${id} is registered but could not be started; it will start at your next login\`);
     }
   }
 }
 
+// install.cjs stays in place after it runs: package.json's postinstall names it, and a package manager may run it again
+// at any later install (bun reruns a trusted folder dependency's on later global installs), so each step replaces what
+// an earlier run did rather than assuming it is the first.
 const repaired = repairCommandTargets();
 registerDaemons();
-removeInstallScript();
 if (IS_INSTALL_SCRIPT) {
   if (!process.argv.includes(REPAIR_ONLY_FLAG)) setUpMissingCompletion();
 } else {

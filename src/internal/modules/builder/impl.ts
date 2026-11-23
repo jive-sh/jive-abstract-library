@@ -487,7 +487,6 @@ function* renderLauncher(context: BuildContext, template: string, isInstallScrip
       daemonLogSubdir: DAEMON_LOG_SUBDIR,
       repairOnlyFlag: REPAIR_ONLY_FLAG,
       binDir: BIN_DIR,
-      installScript: INSTALL_SCRIPT,
       isInstallScript,
       json: (value: unknown) => JSON.stringify(value, null, 2),
       platformBinaries: Object.fromEntries(PLATFORMS.map((platform) => [platform.id, platformBinaryFile(platform)])),

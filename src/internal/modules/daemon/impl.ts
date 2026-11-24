@@ -1,7 +1,7 @@
 import { Effect, FileSystem, Option, Result, Schema, SchemaIssue, pipe } from "effect";
 import { effunct, implementing, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
-import { DAEMON_HOME_DIR, DAEMON_REGISTRY_SUBDIR, INSTALL_SCRIPT } from "../../common/constants";
+import { DAEMON_HOME_DIR, DAEMON_REGISTRY_SUBDIR } from "../../common/constants";
 import { discoverDaemonNames } from "../../public/daemons";
 import { libraryModules } from "../index";
 import type { IOSPlatform } from "../os-platform/interface";
@@ -65,53 +65,28 @@ export class DaemonImpl extends implementing(libraryModules.Daemon)
 
   *repairBrokenRecords(): EffectGen<void, string> {
     const fs = this.getDependency(FileSystem.FileSystem);
-    // Whether each package directory's installer ran and succeeded this time, so a package with several broken
-    // records is reinstalled once.
-    const installerSucceeded = new Map<string, boolean>();
-    const rewritten: Array<{ readonly path: string; readonly installScript: string }> = [];
-
     for (const { path, text } of yield* this.readRecords()) {
       if (Result.isSuccess(Schema.decodeUnknownResult(RecordedRegistration)(text))) continue;
-      const maybeRecorded = Schema.decodeUnknownOption(RecordedPackageDir)(text);
-      if (Option.isNone(maybeRecorded)) continue;
-      const { packageDir } = maybeRecorded.value;
+      yield* this.fsOp(fs.remove(path, { force: true }));
 
-      // The installer prunes a record whose package directory is gone for the same reason: nothing is left to start.
+      const maybeRecorded = Schema.decodeUnknownOption(RecordedPackage)(text);
+      if (Option.isNone(maybeRecorded)) {
+        yield* Effect.logWarning(
+          `Removed ${path}: it was not a daemon registration Jive could read, so the package that wrote it is unknown.`
+          + " Reinstall that package to register its daemon again.",
+        );
+        continue;
+      }
+      const { packageName, packageDir } = maybeRecorded.value;
+      // Nothing is left to start, so nothing needs reinstalling: postinstall.cjs prunes such a record for the same reason.
       if (!(yield* this.fsOp(fs.exists(packageDir)))) {
-        yield* this.fsOp(fs.remove(path, { force: true }));
-        yield* Effect.log(`Removed ${path}: the package it registered, ${packageDir}, is gone`);
+        yield* Effect.log(`Removed ${path}: the package it registered, ${packageName} at ${packageDir}, is gone`);
         continue;
       }
-      const installScript = resolve(packageDir, INSTALL_SCRIPT);
-      if (!(yield* this.fsOp(fs.exists(installScript)))) continue;
-
-      if (!installerSucceeded.has(packageDir)) {
-        // Without the repair-only flag, so the installer registers this copy's daemons again and writes their
-        // records whole.
-        const result = yield* Effect.result(effunct(this.dependencies.OSPlatform.spawnProcess.bind(this.dependencies.OSPlatform))({
-          command: "node",
-          args: [installScript],
-          cwd: packageDir,
-        }));
-        const failure = Result.isFailure(result) ? result.failure
-          : result.success.exitCode !== 0 ? `exit code ${result.success.exitCode}: ${result.success.stderr.trim()}`
-          : undefined;
-        installerSucceeded.set(packageDir, failure === undefined);
-        if (failure !== undefined) {
-          yield* Effect.logWarning(`Could not repair ${path}: node ${installScript} failed (${failure})`);
-        }
-      }
-      if (installerSucceeded.get(packageDir) === true) rewritten.push({ path, installScript });
-    }
-
-    for (const { path, installScript } of rewritten) {
-      if (!(yield* this.fsOp(fs.exists(path)))) {
-        yield* Effect.log(`Removed ${path}: node ${installScript} no longer registers it`);
-        continue;
-      }
-      if (Result.isSuccess(Schema.decodeUnknownResult(RecordedRegistration)(yield* this.fsOp(fs.readFileString(path))))) {
-        yield* Effect.log(`Repaired ${path} by running node ${installScript}`);
-      }
+      yield* Effect.logWarning(
+        `Removed ${path}: it was not a complete daemon registration. Reinstall ${packageName} (installed at ${packageDir})`
+        + " to register its daemon again.",
+      );
     }
   }
 
@@ -193,8 +168,8 @@ const RecordedRegistration = Schema.fromJsonString(Schema.Struct({
   unregister: Schema.Array(Schema.String),
 }));
 
-/** The one field a broken record needs for its package to be found and reinstalled. */
-const RecordedPackageDir = Schema.fromJsonString(Schema.Struct({ packageDir: Schema.String }));
+/** What a broken record needs to name the package that must be reinstalled. */
+const RecordedPackage = Schema.fromJsonString(Schema.Struct({ packageName: Schema.String, packageDir: Schema.String }));
 
 const formatIssue = SchemaIssue.makeFormatterDefault();
 

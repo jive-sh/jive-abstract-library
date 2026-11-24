@@ -1,36 +1,22 @@
 import { Effect, FileSystem, Option, pipe } from "effect";
 import { implementing, type EffectGen } from "effective-modules";
 import { basename, dirname, relative, resolve } from "node:path";
-import ejs from "ejs";
 import type { PackageJson } from "../../public/manifest";
 import {
   BIN_DIR,
-  DAEMON_HOME_DIR,
-  DAEMON_ID_PREFIX,
-  DAEMON_LOG_SUBDIR,
-  DAEMON_REGISTRY_SUBDIR,
   DAEMON_SOURCE_DIR,
   ENTRYPOINT_SOURCE_DIR,
-  INSTALL_SCRIPT,
   LICENSE_FILE,
   MULTI_CALL_BINARY,
   OUTDIR,
+  POSTINSTALL_SCRIPT,
   README_FILE,
-  REPAIR_ONLY_FLAG,
   WINDOWS_EXECUTABLE_SUFFIX,
   WORKDIR,
 } from "../../common/constants";
 import { editJsonc, insertAfter } from "../../common/jsonc";
-import { COMMAND_LAUNCHER_TEMPLATE } from "../../common/command-launcher";
-import {
-  COMPGEN_FLAG,
-  COMPLETION_PROTOCOL,
-  COMPLETION_PROTOCOL_FLAG,
-  COMPLETION_SCRIPT_FLAG,
-  REMOVE_COMPLETION_FLAG,
-  SET_UP_COMPLETION_FLAG,
-  SET_UP_MISSING_COMPLETION_FLAG,
-} from "../../public/cli/parse";
+import { COMMAND_LAUNCHER_SOURCE, POSTINSTALL_SOURCE } from "../../common/postinstall-script";
+import { COMPLETION_PROTOCOL, COMPLETION_PROTOCOL_FLAG } from "../../public/cli/parse";
 import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS, type BuildInput, type BuildResult, type IBuilder, type Platform } from "./interface";
 import { LOCAL_ENVIRONMENT } from "../../public/manifest";
@@ -74,8 +60,8 @@ interface BuildContext {
   /** Daemon entries found in src/daemons/, which the manifest must list exactly. */
   readonly daemons: ReadonlyArray<string>;
   /**
-   * The commands built with `Cli` from this library, found by asking each one for Tab completion; their
-   * launcher stubs set up completion in the user's shell when it is missing.
+   * The commands built with `Cli` from this library, found by asking each one for Tab completion; after an install,
+   * postinstall.cjs asks each to set up completion in the user's shell when it is missing.
    */
   readonly completionCommands: ReadonlyArray<string>;
   readonly rootFiles: ReadonlyArray<string>;
@@ -192,7 +178,7 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     }
     yield* Effect.log(found.length === 0
       ? `Tab completion: no command speaks completion protocol ${COMPLETION_PROTOCOL} (Cli from jive-abstract-library 0.7.0 or later)`
-      : `Tab completion: ${found.join(", ")} set it up from their launchers`);
+      : `Tab completion: ${found.join(", ")} set it up after an install`);
     return found;
   }
 
@@ -354,12 +340,12 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     yield* this.fsOp(fs.makeDirectory(binDir, { recursive: true }));
 
     for (const { command } of context.commandSources) {
-      yield* this.fsOp(fs.writeFileString(resolve(binDir, command), yield* renderLauncher(context, COMMAND_LAUNCHER_TEMPLATE, false), { mode: 0o755 }));
+      yield* this.fsOp(fs.writeFileString(resolve(binDir, command), COMMAND_LAUNCHER_SOURCE, { mode: 0o755 }));
     }
     // Launchers are extensionless CommonJS files inside a package whose manifest may say "type": "module".
     // Node takes a file's module type from the nearest package.json, so this one makes bin/ CommonJS.
     yield* this.fsOp(fs.writeFileString(resolve(binDir, "package.json"), `${JSON.stringify({ type: "commonjs" })}\n`));
-    yield* this.fsOp(fs.writeFileString(resolve(packageDir, INSTALL_SCRIPT), yield* renderLauncher(context, COMMAND_LAUNCHER_TEMPLATE, true), { mode: 0o755 }));
+    yield* this.fsOp(fs.writeFileString(resolve(packageDir, POSTINSTALL_SCRIPT), POSTINSTALL_SOURCE));
   }
 
   private *writePackageJson(packageDir: string, value: Record<string, unknown>): EffectGen<void, string> {
@@ -395,16 +381,18 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     const files = [
       ...context.rootFiles,
       ...(hasSourceEntrypoint ? ["dist", "src"] : []),
-      ...(commandSources.length > 0 ? [BIN_DIR, INSTALL_SCRIPT] : []),
+      ...(commandSources.length > 0 ? [BIN_DIR, POSTINSTALL_SCRIPT] : []),
     ];
     generated["files"] = files;
 
     if (commandSources.length > 0) {
-      generated["scripts"] = { postinstall: `node ./${INSTALL_SCRIPT}` };
+      generated["scripts"] = { postinstall: `node ./${POSTINSTALL_SCRIPT}` };
       generated["bin"] = Object.fromEntries(commandSources.map(({ command }) => [command, `./${BIN_DIR}/${command}`]));
       generated["optionalDependencies"] = Object.fromEntries(
         context.platforms.map((platform) => [platformAliasName(context, platform), localPlatformVersion(context, platform)]),
       );
+      // What postinstall.cjs needs that package.json has no field for.
+      generated["jive"] = { daemons: context.daemons, completionCommands: context.completionCommands };
     }
 
     const dependencies = Option.getOrUndefined(packageJson.dependencies);
@@ -467,35 +455,6 @@ function platformAliasName(context: BuildContext, platform: Platform): string {
 
 function platformBinaryFile(platform: Platform): string {
   return platform.os === "win32" ? `${MULTI_CALL_BINARY}${WINDOWS_EXECUTABLE_SUFFIX}` : MULTI_CALL_BINARY;
-}
-
-function* renderLauncher(context: BuildContext, template: string, isInstallScript: boolean): EffectGen<string, string> {
-  return yield* Effect.try({
-    try: () => ejs.render(template, {
-      commandNames: context.commandSources.map(({ command }) => command),
-      packageName: context.packageJson.name,
-      daemons: context.daemons,
-      completionCommands: context.completionCommands,
-      completionSkipFlags: [
-        COMPGEN_FLAG, COMPLETION_SCRIPT_FLAG, COMPLETION_PROTOCOL_FLAG,
-        SET_UP_COMPLETION_FLAG, REMOVE_COMPLETION_FLAG, SET_UP_MISSING_COMPLETION_FLAG,
-      ],
-      setUpMissingCompletionFlag: SET_UP_MISSING_COMPLETION_FLAG,
-      daemonIdPrefix: DAEMON_ID_PREFIX,
-      daemonHomeDir: DAEMON_HOME_DIR,
-      daemonRegistrySubdir: DAEMON_REGISTRY_SUBDIR,
-      daemonLogSubdir: DAEMON_LOG_SUBDIR,
-      repairOnlyFlag: REPAIR_ONLY_FLAG,
-      binDir: BIN_DIR,
-      isInstallScript,
-      json: (value: unknown) => JSON.stringify(value, null, 2),
-      platformBinaries: Object.fromEntries(PLATFORMS.map((platform) => [platform.id, platformBinaryFile(platform)])),
-      platformMap: Object.fromEntries(PLATFORMS.map((platform) => [`${platform.os}-${platform.cpu}`, platform.id])),
-      platformPackages: Object.fromEntries(PLATFORMS.map((platform) => [platform.id, platformAliasName(context, platform)])),
-      windowsExecutableSuffix: WINDOWS_EXECUTABLE_SUFFIX,
-    }, { async: false }),
-    catch: (e) => `Failed to render the command launcher: ${e instanceof Error ? e.message : String(e)}`,
-  });
 }
 
 function generateMultiCallEntrypoint(context: BuildContext): string {

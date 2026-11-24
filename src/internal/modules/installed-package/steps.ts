@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import { Option } from "effect";
-import { INSTALL_SCRIPT } from "../../common/constants";
+import { POSTINSTALL_SCRIPT } from "../../common/constants";
 import type { Install } from "./interface";
 
 /**
@@ -20,7 +20,7 @@ export function installSteps(input: { readonly packageName: string; readonly ins
   if (install.packageManager === "bun" || install.packageManager === "pnpm") {
     // Through the install's own node_modules rather than packageDir: pnpm puts each version in a directory
     // of its own, so the old one's path does not lead to the new install script.
-    const script = path.join(install.cwd, "node_modules", packageName, INSTALL_SCRIPT);
+    const script = path.join(install.cwd, "node_modules", packageName, POSTINSTALL_SCRIPT);
     // With the manager's own runtime: a bun-only machine may have no `node`.
     steps.push({ argv: [install.packageManager === "bun" ? "bun" : "node", script], onlyIfExists: Option.some(script) });
   }

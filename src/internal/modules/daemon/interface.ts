@@ -73,12 +73,12 @@ export interface IDaemon {
    */
   list(): EffectGen<ReadonlyArray<DaemonRegistration>, string>;
   /**
-   * Fixes each record `list` would skip, where it can: a record whose package directory is gone is deleted, and
-   * one whose package directory still holds its `install.cjs` is rewritten by running that installer (once per
-   * package directory), which registers the package's daemons again. Each repair or removal is logged with the
-   * record's path; a record it cannot fix is left for `list` to report.
+   * Deletes each record `list` would skip. One whose package directory is gone is logged as removed; for any other, a
+   * warning names the package that wrote it (or says it can't be told) and says to reinstall it, which registers its
+   * daemon again. It never runs a package's installer: that is the installed package's own code, which this library
+   * version may not match.
    *
-   * Separate from `list` because it starts installers, which restart daemons: a person's listing command may do
+   * Separate from `list` because it deletes records another process may be writing: a person's listing command may do
    * that, but a daemon must not, whether checking its own registration every minute or listing daemons at startup.
    */
   repairBrokenRecords(): EffectGen<void, string>;

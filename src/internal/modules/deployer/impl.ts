@@ -2,7 +2,7 @@ import { Clock, Effect, FileSystem, Option, Schema, pipe } from "effect";
 import { effunct, implementing, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
 import { isEnvironment, LOCAL_ENVIRONMENT, type ProvisionWithJive } from "../../public/manifest";
-import { INSTALL_SCRIPT, LOCAL_ALIAS_SUFFIX, OUTDIR, REPAIR_ONLY_FLAG } from "../../common/constants";
+import { LOCAL_ALIAS_SUFFIX, OUTDIR, POSTINSTALL_SCRIPT, REPAIR_ONLY_FLAG } from "../../common/constants";
 import type { DeployPlan } from "../../public/deploy-plan";
 import { libraryModules } from "../index";
 import { BASE_PACKAGE_DIR, PLATFORMS } from "../builder/interface";
@@ -400,7 +400,7 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
    */
   private *runInstallScript(alias: string): EffectGen<void, string> {
     const rootDir = yield* this.dependencies.OSPlatform.getCurrentDirectory();
-    const scriptPath = resolve(rootDir, "node_modules", alias, INSTALL_SCRIPT);
+    const scriptPath = resolve(rootDir, "node_modules", alias, POSTINSTALL_SCRIPT);
     if (!(yield* pipe(
       this.getDependency(FileSystem.FileSystem).exists(scriptPath),
       Effect.mapError((e) => e.message),
@@ -414,7 +414,7 @@ export class DeployerImpl extends implementing(libraryModules.Deployer)
       stderr: "inherit",
     });
     if (result.exitCode !== 0) {
-      return yield* Effect.fail(`${INSTALL_SCRIPT} failed with exit code ${result.exitCode}`);
+      return yield* Effect.fail(`${POSTINSTALL_SCRIPT} failed with exit code ${result.exitCode}`);
     }
   }
 

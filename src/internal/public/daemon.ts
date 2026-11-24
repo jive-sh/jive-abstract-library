@@ -12,8 +12,8 @@ import { OSPlatformImpl } from "../modules/os-platform/impl";
  * Only what supervision needs, rather than this package's whole module graph.
  *
  * This runs inside *other* packages' daemons, which are Bun-compiled single-file binaries — so the graph
- * reached from here is the graph bundled into them. The full layer pulls in the builder, and with it
- * `ejs`, which a signing agent has no use for.
+ * reached from here is the graph bundled into them. The full layer pulls in the builder, which a signing agent
+ * has no use for.
  */
 const layer = pipe(
   DaemonImpl.Layer,
@@ -80,11 +80,11 @@ export const daemonStatuses: Effect.Effect<ReadonlyArray<DaemonStatus>, string> 
 );
 
 /**
- * Fixes the broken records `daemonStatuses` would skip, where it can (`IDaemon.repairBrokenRecords`): deletes one whose
- * package is gone, and reruns the `install.cjs` of one whose package still has it, which restarts that package's daemons.
+ * Deletes the broken records `daemonStatuses` would skip (`IDaemon.repairBrokenRecords`), warning through the caller's
+ * logger, for each one whose package is still installed, that the package it names must be reinstalled.
  *
- * For a person's listing command to run before `daemonStatuses`, never for a daemon: a daemon calling it would run
- * other packages' installers and restart their daemons.
+ * For a person's listing command to run before `daemonStatuses`, so they see the warning, never for a daemon: a daemon
+ * calling it would delete records other packages' installs may be writing.
  */
 export const repairDaemonRecords: Effect.Effect<void, string> = pipe(
   effunct(repairRecords)(),

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, Logger, Option, pipe } from "effect";
@@ -48,12 +48,13 @@ function halfRecord(input: { readonly name: string; readonly packageDir: string 
 }
 
 /**
- * Repairs then lists a registry holding `records` (file name to contents) the way `jive daemons` does
- * (`repairDaemonRecords`, then `daemonStatuses`), with every process answered by `spawn`. Returns each status, every
- * process started, every log line and the registry folder.
+ * Lists a registry holding `records` (file name to contents) the way `daemonStatuses` does, after repairing it the way
+ * `jive daemons` does (`repairDaemonRecords`) when `repair`, with every process answered by `spawn`. Returns each
+ * status, every process started, every log line with its level, and the registry folder.
  */
 async function statuses(input: {
   readonly records: (home: string) => Record<string, string>;
+  readonly repair: boolean;
   readonly spawn?: (spawn: SpawnProcessInput) => { exitCode: number; stdout: string; stderr: string };
 }) {
   const home = mkdtempSync(join(tmpdir(), "daemon-registry-"));
@@ -62,7 +63,7 @@ async function statuses(input: {
   for (const [file, text] of Object.entries(input.records(home))) writeFileSync(join(registry, file), text);
 
   const calls: Array<string> = [];
-  const logs: Array<string> = [];
+  const logs: Array<{ readonly level: string; readonly message: string }> = [];
   const osPlatform = OSPlatformImpl.mockLayer({
     *getHomeDirectory() { return home; },
     *spawnProcess(spawn: SpawnProcessInput) {
@@ -73,31 +74,31 @@ async function statuses(input: {
   const result = await Effect.runPromise(pipe(
     effunct(function* () {
       const daemon = yield* libraryModules.Daemon;
-      yield* daemon.repairBrokenRecords();
+      if (input.repair) yield* daemon.repairBrokenRecords();
       const found = [];
       for (const registration of yield* daemon.list()) found.push(yield* daemon.status(registration));
       return found;
     })(),
     Effect.provide(pipe(DaemonImpl.Layer, Layer.provideMerge(osPlatform), Layer.provideMerge(BunFileSystem.layer))),
-    Effect.provide(Logger.layer([Logger.make(({ message }) => { logs.push(String(message)); })])),
+    Effect.provide(Logger.layer([Logger.make(({ logLevel, message }) => { logs.push({ level: logLevel, message: String(message) }); })])),
   ));
   return { result, calls, logs, home, registry };
 }
 
-/** A package directory under `home`, with an install.cjs when `withInstaller`. */
-function packageDirIn(input: { readonly home: string; readonly withInstaller: boolean }): string {
-  const packageDir = join(input.home, "node_modules", "other");
+/** An installed package's directory under `home`. */
+function packageDirIn(home: string): string {
+  const packageDir = join(home, "node_modules", "other");
   mkdirSync(packageDir, { recursive: true });
-  if (input.withInstaller) writeFileSync(join(packageDir, "install.cjs"), "");
   return packageDir;
 }
 
 describe("listing daemons", () => {
-  test("reports every complete registration and skips, by path, one it cannot repair", async () => {
+  test("reports every complete registration and skips, by path, one that is not complete, leaving it in place", async () => {
     const { result, calls, logs, registry } = await statuses({
+      repair: false,
       records: (home) => ({
         "a.json": JSON.stringify(COMPLETE),
-        "b.json": JSON.stringify(halfRecord({ name: "agent", packageDir: packageDirIn({ home, withInstaller: false }) })),
+        "b.json": JSON.stringify(halfRecord({ name: "agent", packageDir: packageDirIn(home) })),
       }),
     });
 
@@ -105,58 +106,68 @@ describe("listing daemons", () => {
     expect(calls).toEqual([`systemctl --user show --property=ActiveState --property=MainPID ${COMPLETE.unit}`]);
     expect(existsSync(join(registry, "b.json"))).toBe(true);
     expect(logs).toHaveLength(1);
-    expect(logs[0]).toStartWith(`Skipping ${join(registry, "b.json")}: it is not a complete daemon registration (`);
-    expect(logs[0]).toContain(`"kind"`);
-    expect(logs[0]).toEndWith("Reinstalling the package that registered it rewrites it.");
+    expect(logs[0]!.level).toBe("Warn");
+    expect(logs[0]!.message).toStartWith(`Skipping ${join(registry, "b.json")}: it is not a complete daemon registration (`);
+    expect(logs[0]!.message).toContain(`"kind"`);
+    expect(logs[0]!.message).toEndWith("Reinstalling the package that registered it rewrites it.");
   });
 
   test("skips a record that is not JSON and still reports the rest", async () => {
-    const { result, logs, registry } = await statuses({ records: () => ({ "a.json": "{\"id\": ", "b.json": JSON.stringify(COMPLETE) }) });
+    const { result, logs, registry } = await statuses({ repair: false, records: () => ({ "a.json": "{\"id\": ", "b.json": JSON.stringify(COMPLETE) }) });
 
     expect(result.map(({ registration }) => registration.id)).toEqual([COMPLETE.id]);
     expect(logs).toHaveLength(1);
-    expect(logs[0]).toStartWith(`Skipping ${join(registry, "a.json")}: it is not a complete daemon registration (`);
+    expect(logs[0]!.message).toStartWith(`Skipping ${join(registry, "a.json")}: it is not a complete daemon registration (`);
   });
 });
 
 describe("repairing broken daemon records", () => {
-  test("deletes a half record whose package directory is gone", async () => {
+  test("deletes each broken record of an installed package, runs nothing, and warns that the package must be reinstalled", async () => {
     const { result, calls, logs, home, registry } = await statuses({
+      repair: true,
+      records: (home) => {
+        const packageDir = packageDirIn(home);
+        return {
+          "a.json": JSON.stringify(halfRecord({ name: "agent", packageDir })),
+          "b.json": JSON.stringify(halfRecord({ name: "watcher", packageDir })),
+          "c.json": JSON.stringify(COMPLETE),
+        };
+      },
+    });
+
+    expect(result.map(({ registration }) => registration.id)).toEqual([COMPLETE.id]);
+    expect(calls).toEqual([`systemctl --user show --property=ActiveState --property=MainPID ${COMPLETE.unit}`]);
+    expect(readdirSync(registry)).toEqual(["c.json"]);
+    const packageDir = join(home, "node_modules", "other");
+    expect(logs).toEqual(["a.json", "b.json"].map((file) => ({
+      level: "Warn",
+      message: `Removed ${join(registry, file)}: it was not a complete daemon registration. Reinstall other (installed at ${packageDir}) to register its daemon again.`,
+    })));
+  });
+
+  test("deletes a broken record whose package directory is gone, with no warning", async () => {
+    const { result, calls, logs, home, registry } = await statuses({
+      repair: true,
       records: (home) => ({ "a.json": JSON.stringify(halfRecord({ name: "agent", packageDir: join(home, "node_modules", "removed") })) }),
     });
 
     expect(result).toEqual([]);
     expect(calls).toEqual([]);
     expect(existsSync(join(registry, "a.json"))).toBe(false);
-    expect(logs).toEqual([`Removed ${join(registry, "a.json")}: the package it registered, ${join(home, "node_modules", "removed")}, is gone`]);
+    expect(logs).toEqual([{
+      level: "Info",
+      message: `Removed ${join(registry, "a.json")}: the package it registered, other at ${join(home, "node_modules", "removed")}, is gone`,
+    }]);
   });
 
-  test("runs a package's install.cjs once for all of its broken records", async () => {
-    const { calls, logs, home, registry } = await statuses({
-      records: (home) => {
-        const packageDir = packageDirIn({ home, withInstaller: true });
-        return {
-          "a.json": JSON.stringify(halfRecord({ name: "agent", packageDir })),
-          "b.json": JSON.stringify(halfRecord({ name: "watcher", packageDir })),
-        };
-      },
-      // An installer that runs but leaves the records as they were.
-      spawn: () => ({ exitCode: 0, stdout: "", stderr: "" }),
-    });
+  test("deletes a record that names no package, and warns that the package that wrote it is unknown", async () => {
+    const { result, logs, registry } = await statuses({ repair: true, records: () => ({ "a.json": "{\"id\": " }) });
 
-    expect(calls).toEqual([`node ${join(home, "node_modules", "other", "install.cjs")}`]);
-    expect(logs.map((line) => line.split(":")[0])).toEqual([`Skipping ${join(registry, "a.json")}`, `Skipping ${join(registry, "b.json")}`]);
-  });
-
-  test("skips, naming why, a record whose package's install.cjs fails", async () => {
-    const { logs, home, registry } = await statuses({
-      records: (home) => ({ "a.json": JSON.stringify(halfRecord({ name: "agent", packageDir: packageDirIn({ home, withInstaller: true }) })) }),
-      spawn: () => ({ exitCode: 1, stdout: "", stderr: "Cannot find module 'fs'" }),
-    });
-
-    expect(logs).toEqual([
-      `Could not repair ${join(registry, "a.json")}: node ${join(home, "node_modules", "other", "install.cjs")} failed (exit code 1: Cannot find module 'fs')`,
-      expect.stringContaining(`Skipping ${join(registry, "a.json")}: it is not a complete daemon registration (`),
-    ]);
+    expect(result).toEqual([]);
+    expect(existsSync(join(registry, "a.json"))).toBe(false);
+    expect(logs).toEqual([{
+      level: "Warn",
+      message: `Removed ${join(registry, "a.json")}: it was not a daemon registration Jive could read, so the package that wrote it is unknown. Reinstall that package to register its daemon again.`,
+    }]);
   });
 });

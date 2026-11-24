@@ -20,7 +20,7 @@ function fakeInstall(tags: Record<string, string>) {
   writeFileSync(join(global, "package.json"), "{}");
   writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: PKG, version: "1.0.0" }));
   writeFileSync(join(packageDir, "bin", "demo"), "");
-  writeFileSync(join(packageDir, "install.cjs"), "");
+  writeFileSync(join(packageDir, "postinstall.cjs"), "");
   mkdirSync(join(global, "node_modules", `${PKG}-${platform}`), { recursive: true });
   writeFileSync(join(global, "node_modules", `${PKG}-${platform}`, "package.json"), JSON.stringify({ name: PKG }));
 
@@ -61,7 +61,7 @@ describe.skipIf(process.platform === "win32")("autoUpgrade", () => {
     expect(readFileSync(join(install.root, "added"), "utf8").trim())
       .toBe(`add --no-cache -g ${PKG}@1.0.1 BUN_INSTALL=${join(install.root, ".bun")}`);
     expect(readFileSync(join(install.root, "install-script-ran"), "utf8").trim())
-      .toBe(join(install.root, ".bun/install/global/node_modules", PKG, "install.cjs"));
+      .toBe(join(install.root, ".bun/install/global/node_modules", PKG, "postinstall.cjs"));
     expect(output).toContain(`Upgrading ${PKG} from 1.0.0 to 1.0.1 with bun`);
     expect(output).toContain("this process was not restarted");
   }, 30_000);

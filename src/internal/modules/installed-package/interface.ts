@@ -59,7 +59,7 @@ export interface IInstalledPackage {
   /** The package's dist-tags as the manager that installed it reports them, from the registry it is configured for. */
   distTags(input: { readonly packageName: string; readonly install: Install }): EffectGen<Readonly<Record<string, string>>, string>;
   /**
-   * Installs `<packageName>@<version>` the way it was installed, then runs the new version's `install.cjs`
+   * Installs `<packageName>@<version>` the way it was installed, then runs the new version's `postinstall.cjs`
    * where the manager skips install scripts (bun and pnpm do, for packages not on their allowlist). Skipped,
    * the commands stay JS launchers until first run, and a registered daemon, started without `node` on its
    * PATH, fails at its next start and is never re-registered for the new version.

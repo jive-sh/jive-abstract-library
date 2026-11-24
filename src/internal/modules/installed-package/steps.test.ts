@@ -18,8 +18,8 @@ describe("installSteps", () => {
     expect(installSteps({ packageName: PKG, install: install({}), version: "0.4.5" })).toEqual([
       { argv: ["bun", "add", "--no-cache", "-g", `${PKG}@0.4.5`], onlyIfExists: Option.none() },
       {
-        argv: ["bun", `/home/me/.bun/install/global/node_modules/${PKG}/install.cjs`],
-        onlyIfExists: Option.some(`/home/me/.bun/install/global/node_modules/${PKG}/install.cjs`),
+        argv: ["bun", `/home/me/.bun/install/global/node_modules/${PKG}/postinstall.cjs`],
+        onlyIfExists: Option.some(`/home/me/.bun/install/global/node_modules/${PKG}/postinstall.cjs`),
       },
     ]);
   });
@@ -32,7 +32,7 @@ describe("installSteps", () => {
     });
     expect(steps.map((step) => step.argv)).toEqual([
       ["pnpm", "add", "-g", `${PKG}@latest`],
-      ["node", `/p/global/5/node_modules/${PKG}/install.cjs`],
+      ["node", `/p/global/5/node_modules/${PKG}/postinstall.cjs`],
     ]);
   });
 

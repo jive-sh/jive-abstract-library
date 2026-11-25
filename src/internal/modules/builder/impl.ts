@@ -40,6 +40,8 @@ const EMITTED_ENTRYPOINT = "index.js";
 const SOURCE_SUFFIX = ".ts";
 const COMPLETION_PROBE_TIMEOUT_MS = 30_000;
 const TEST_SUFFIXES = [".test.ts", ".test.js", ".test.js.map"] as const;
+/** What tsc compiles, declaration files included; every other file under src is copied into the emitted JS unchanged. */
+const TYPESCRIPT_SUFFIXES = [".ts", ".tsx", ".mts", ".cts"] as const;
 const BASE_PACKAGE_ROOT_FILES = [README_FILE, LICENSE_FILE] as const;
 const TSCONFIG_INCLUDE = ["src/**/*.ts"];
 const TSCONFIG_EXCLUDE = [OUTDIR, "node_modules"];
@@ -268,7 +270,23 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
       // tsc reports diagnostics on stdout; a build invoked from get-config must keep stdout clean.
       return yield* Effect.fail(`tsc failed with exit code ${result.exitCode}:\n${result.stdout.trim()}`);
     }
+    // tsc writes only what it compiles. A module's other files, such as the .cjs files postinstall-script.ts embeds as
+    // text, must sit next to the emitted JS, unchanged, for the emitted JS to find them.
+    yield* this.copyNonTypeScriptSource(resolve(context.rootDir, "src"), resolve(packageDir, OUTDIR));
+  }
 
+  private *copyNonTypeScriptSource(fromDir: string, toDir: string): EffectGen<void, string> {
+    const fs = this.getDependency(FileSystem.FileSystem);
+    for (const child of yield* this.fsOp(fs.readDirectory(fromDir))) {
+      const from = resolve(fromDir, child);
+      const to = resolve(toDir, child);
+      if ((yield* this.fsOp(fs.stat(from))).type === "Directory") {
+        yield* this.copyNonTypeScriptSource(from, to);
+      } else if (!TYPESCRIPT_SUFFIXES.some((suffix) => child.endsWith(suffix))) {
+        yield* this.fsOp(fs.makeDirectory(toDir, { recursive: true }));
+        yield* this.fsOp(fs.copyFile(from, to));
+      }
+    }
   }
 
   /**

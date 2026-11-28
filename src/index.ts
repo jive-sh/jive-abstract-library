@@ -4,8 +4,9 @@
  * What lives here: the shape a package.json must have to be built by this abstract, the release helpers a
  * package's own deploy script may need, the dev server, daemon registration, upgrades, and the pieces every
  * other abstract builds its own CLI from: `makeCicdCommandFactory` (the six hooks' input reading, output printing
- * and exit handling), `makeJivePackageJsonSchema` (the fields every Jive package has, plus that abstract's own block)
- * and `loadPackageJson`. An abstract imports these rather than restating them. A package's own modules run host
+ * and exit handling), `makeJivePackageJsonSchema` (the fields every Jive package has, plus that abstract's own block),
+ * `discoverLibrarySchema` and `resolveCopyEntries` (the `library` block narrowed to a package's files, and the build's
+ * check of `jive.library.copy`, each taking the paths the extending abstract's own build writes) and `loadPackageJson`. An abstract imports these rather than restating them. A package's own modules run host
  * processes through `OSPlatform`, and a CLI built with `Cli` logs through `Cli.terminalLogger`.
  */
 
@@ -36,6 +37,7 @@ export {
   makePackageJsonSchema,
   type CicdConfig,
   type LibraryConfig,
+  type LibrarySchemaInput,
   type PackageJson,
   type ProvisionWithJive,
 } from "./internal/public/manifest";
@@ -50,8 +52,21 @@ export type { PipelineContext } from "./internal/common/pipeline-context";
 export { discoverDaemonNames, packageRootDir } from "./internal/public/daemons";
 
 export {
+  RESERVED_COPY_PATHS,
+  listCopyableEntries,
+  listCopyablePaths,
+  resolveCopyEntries,
+  type CheckCopyInput,
+  type CopyEntry,
+  type CopyKind,
+  type CopyablePathsInput,
+} from "./internal/public/copy";
+
+export {
+  discoverLibrarySchema,
   genPackageJsonSchema,
   runDevServer,
+  type DiscoverLibrarySchemaInput,
   type DevServerConfig,
   type PackageJsonSchemaGenerator,
 } from "./internal/public/dev-server";

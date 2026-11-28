@@ -40,12 +40,6 @@ export function* editJsonc(filePath: string, originalText: string, edits: Readon
   return text;
 }
 
-/** Index just past `property`, so an inserted key lands where a reader expects it rather than at the end. */
-export function insertAfter(properties: readonly string[], property: string): number {
-  const index = properties.indexOf(property);
-  return index === -1 ? properties.length : index + 1;
-}
-
 export function* assertValidJsonc(filePath: string, text: string): EffectGen<void, string> {
   const errors: ParseError[] = [];
   parseJsonc(text, errors, { allowTrailingComma: true });

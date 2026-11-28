@@ -1,20 +1,20 @@
 import { Effect, FileSystem, Option, pipe } from "effect";
 import { implementing, type EffectGen } from "effective-modules";
 import { basename, dirname, relative, resolve } from "node:path";
+import { resolveCopyEntries, type CopyEntry } from "../../public/copy";
 import type { PackageJson } from "../../public/manifest";
 import {
   BIN_DIR,
   DAEMON_SOURCE_DIR,
   ENTRYPOINT_SOURCE_DIR,
-  LICENSE_FILE,
   MULTI_CALL_BINARY,
   OUTDIR,
+  PACKAGE_JSON_FILE,
   POSTINSTALL_SCRIPT,
-  README_FILE,
+  SOURCE_DIR,
   WINDOWS_EXECUTABLE_SUFFIX,
   WORKDIR,
 } from "../../common/constants";
-import { editJsonc, insertAfter } from "../../common/jsonc";
 import { COMMAND_LAUNCHER_SOURCE, POSTINSTALL_SOURCE } from "../../common/postinstall-script";
 import { COMPLETION_PROTOCOL, COMPLETION_PROTOCOL_FLAG } from "../../public/cli/parse";
 import { libraryModules } from "../index";
@@ -42,9 +42,6 @@ const COMPLETION_PROBE_TIMEOUT_MS = 30_000;
 const TEST_SUFFIXES = [".test.ts", ".test.js", ".test.js.map"] as const;
 /** What tsc compiles, declaration files included; every other file under src is copied into the emitted JS unchanged. */
 const TYPESCRIPT_SUFFIXES = [".ts", ".tsx", ".mts", ".cts"] as const;
-const BASE_PACKAGE_ROOT_FILES = [README_FILE, LICENSE_FILE] as const;
-const TSCONFIG_INCLUDE = ["src/**/*.ts"];
-const TSCONFIG_EXCLUDE = [OUTDIR, "node_modules"];
 
 interface CommandSource {
   readonly command: string;
@@ -66,7 +63,8 @@ interface BuildContext {
    * postinstall.cjs asks each to set up completion in the user's shell when it is missing.
    */
   readonly completionCommands: ReadonlyArray<string>;
-  readonly rootFiles: ReadonlyArray<string>;
+  /** `jive.library.copy`, checked against the package's files: what the base package gets verbatim. */
+  readonly copyEntries: ReadonlyArray<CopyEntry>;
   readonly hasSourceEntrypoint: boolean;
   readonly platforms: ReadonlyArray<Platform>;
   readonly localOnly: boolean;
@@ -129,7 +127,11 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
       packageJson,
       repositoryUrl: Option.map(maybeRemote, (remote) => remote.packageJsonUrl),
       commandSources,
-      rootFiles: yield* this.collectRootFiles(rootDir),
+      copyEntries: yield* Effect.provideService(
+        resolveCopyEntries({ rootDir, copy: packageJson.jive.library.copy, extraReservedPaths: [] }),
+        FileSystem.FileSystem,
+        this.getDependency(FileSystem.FileSystem),
+      ),
       hasSourceEntrypoint: yield* this.exists(resolve(rootDir, SOURCE_ENTRYPOINT)),
       platforms: commandSources.length === 0
         ? []
@@ -184,14 +186,6 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     return found;
   }
 
-  private *collectRootFiles(rootDir: string): EffectGen<ReadonlyArray<string>, string> {
-    const present: string[] = [];
-    for (const fileName of BASE_PACKAGE_ROOT_FILES) {
-      if (yield* this.exists(resolve(rootDir, fileName))) present.push(fileName);
-    }
-    return present;
-  }
-
   private *getLocalPlatform(): EffectGen<Platform, string> {
     const { os, cpu } = yield* this.dependencies.OSPlatform.getCurrentPlatform();
     const platform = PLATFORMS.find((candidate) => candidate.os === os && candidate.cpu === cpu);
@@ -209,16 +203,18 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
       // The whole source tree ships: the public entrypoint re-exports from internal modules, so
       // both its emitted JS and its types resolve only if those files are present. The `exports`
       // map is what keeps them unreachable as public subpaths.
-      yield* this.fsOp(fs.copy(resolve(context.rootDir, "src"), resolve(packageDir, "src")));
-      yield* this.removeTests(resolve(packageDir, "src"));
-      yield* this.removeTests(resolve(packageDir, "dist"));
+      yield* this.fsOp(fs.copy(resolve(context.rootDir, SOURCE_DIR), resolve(packageDir, SOURCE_DIR)));
+      yield* this.removeTests(resolve(packageDir, SOURCE_DIR));
+      yield* this.removeTests(resolve(packageDir, OUTDIR));
     }
     if (context.commandSources.length > 0) {
       yield* this.writeCommandLaunchers(context, packageDir);
     }
 
-    for (const fileName of context.rootFiles) {
-      yield* this.fsOp(fs.copyFile(resolve(context.rootDir, fileName), resolve(packageDir, fileName)));
+    for (const { path, kind } of context.copyEntries) {
+      const to = resolve(packageDir, path);
+      yield* this.fsOp(fs.makeDirectory(dirname(to), { recursive: true }));
+      yield* this.fsOp(kind === "folder" ? fs.copy(resolve(context.rootDir, path), to) : fs.copyFile(resolve(context.rootDir, path), to));
     }
 
     yield* this.writePackageJson(packageDir, this.generateBasePackageJson(context));
@@ -243,7 +239,6 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
 
   private *transpileLibrarySource(context: BuildContext, packageDir: string): EffectGen<void, string> {
     const tsconfigPath = resolve(context.rootDir, "tsconfig.json");
-    yield* this.ensureTsconfigSourceBoundary(tsconfigPath);
 
     const { os } = yield* this.dependencies.OSPlatform.getCurrentPlatform();
     const tscPath = resolve(context.rootDir, "node_modules", ".bin", os === "win32" ? "tsc.cmd" : "tsc");
@@ -255,8 +250,8 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
       command: tscPath,
       args: [
         "--project", tsconfigPath,
-        "--rootDir", resolve(context.rootDir, "src"),
-        "--outDir", resolve(packageDir, "dist"),
+        "--rootDir", resolve(context.rootDir, SOURCE_DIR),
+        "--outDir", resolve(packageDir, OUTDIR),
         "--pretty", "true",
         "--noEmit", "false",
         "--declaration", "false",
@@ -272,7 +267,7 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     }
     // tsc writes only what it compiles. A module's other files, such as the .cjs files postinstall-script.ts embeds as
     // text, must sit next to the emitted JS, unchanged, for the emitted JS to find them.
-    yield* this.copyNonTypeScriptSource(resolve(context.rootDir, "src"), resolve(packageDir, OUTDIR));
+    yield* this.copyNonTypeScriptSource(resolve(context.rootDir, SOURCE_DIR), resolve(packageDir, OUTDIR));
   }
 
   private *copyNonTypeScriptSource(fromDir: string, toDir: string): EffectGen<void, string> {
@@ -340,18 +335,6 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     }
   }
 
-  private *ensureTsconfigSourceBoundary(tsconfigPath: string): EffectGen<void, string> {
-    const fs = this.getDependency(FileSystem.FileSystem);
-    const originalText = yield* this.fsOp(fs.readFileString(tsconfigPath));
-    const updatedText = yield* editJsonc(tsconfigPath, originalText, [
-      { path: ["include"], value: TSCONFIG_INCLUDE, insertAt: (properties) => insertAfter(properties, "compilerOptions") },
-      { path: ["exclude"], value: TSCONFIG_EXCLUDE, insertAt: (properties) => insertAfter(properties, "include") },
-    ]);
-    if (updatedText !== originalText) {
-      yield* this.fsOp(fs.writeFileString(tsconfigPath, updatedText));
-    }
-  }
-
   private *writeCommandLaunchers(context: BuildContext, packageDir: string): EffectGen<void, string> {
     const fs = this.getDependency(FileSystem.FileSystem);
     const binDir = resolve(packageDir, BIN_DIR);
@@ -362,13 +345,13 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
     }
     // Launchers are extensionless CommonJS files inside a package whose manifest may say "type": "module".
     // Node takes a file's module type from the nearest package.json, so this one makes bin/ CommonJS.
-    yield* this.fsOp(fs.writeFileString(resolve(binDir, "package.json"), `${JSON.stringify({ type: "commonjs" })}\n`));
+    yield* this.fsOp(fs.writeFileString(resolve(binDir, PACKAGE_JSON_FILE), `${JSON.stringify({ type: "commonjs" })}\n`));
     yield* this.fsOp(fs.writeFileString(resolve(packageDir, POSTINSTALL_SCRIPT), POSTINSTALL_SOURCE));
   }
 
   private *writePackageJson(packageDir: string, value: Record<string, unknown>): EffectGen<void, string> {
     const fs = this.getDependency(FileSystem.FileSystem);
-    yield* this.fsOp(fs.writeFileString(resolve(packageDir, "package.json"), `${JSON.stringify(value, null, 2)}\n`));
+    yield* this.fsOp(fs.writeFileString(resolve(packageDir, PACKAGE_JSON_FILE), `${JSON.stringify(value, null, 2)}\n`));
   }
 
   private generateBasePackageJson(context: BuildContext): Record<string, unknown> {
@@ -391,14 +374,17 @@ export class BuilderImpl extends implementing(libraryModules.Builder)
       generated["main"] = `./dist/${EMITTED_ENTRYPOINT}`;
       generated["module"] = `./dist/${EMITTED_ENTRYPOINT}`;
       generated["types"] = `./${SOURCE_ENTRYPOINT}`;
-      generated["exports"] = {
-        ".": { types: `./${SOURCE_ENTRYPOINT}`, import: `./dist/${EMITTED_ENTRYPOINT}` },
-      };
     }
+    const exports = {
+      ...(hasSourceEntrypoint ? { ".": { types: `./${SOURCE_ENTRYPOINT}`, import: `./dist/${EMITTED_ENTRYPOINT}` } } : {}),
+      ...Object.fromEntries(context.copyEntries.map(({ path, kind }) =>
+        kind === "folder" ? [`./${path}/*`, `./${path}/*`] : [`./${path}`, `./${path}`])),
+    };
+    if (Object.keys(exports).length > 0) generated["exports"] = exports;
 
     const files = [
-      ...context.rootFiles,
-      ...(hasSourceEntrypoint ? ["dist", "src"] : []),
+      ...context.copyEntries.map(({ path }) => path),
+      ...(hasSourceEntrypoint ? [OUTDIR, SOURCE_DIR] : []),
       ...(commandSources.length > 0 ? [BIN_DIR, POSTINSTALL_SCRIPT] : []),
     ];
     generated["files"] = files;

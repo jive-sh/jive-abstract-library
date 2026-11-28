@@ -1,4 +1,5 @@
 import { Schema, SchemaTransformation } from "effect";
+import { RESERVED_COPY_PATHS } from "./copy";
 
 /**
  * The shape a package.json must have to be built and published by this template.
@@ -187,24 +188,51 @@ export const ProvisionWithJiveSchema = Schema.NullOr(ProvisionWithJive).annotate
 }).pipe(Schema.decodeTo(Schema.Option(Schema.toType(ProvisionWithJive)), SchemaTransformation.optionFromNullOr()));
 
 /**
+ * Files and folders copied verbatim into the published package, by path from the package root. Which paths are
+ * allowed is decided by the package's files (`listCopyablePaths`), so the decoder takes any list and the build checks
+ * it against them, while the generated JSON Schema offers exactly the allowed paths.
+ */
+const CopyDeclarations = Schema.Array(Schema.NonEmptyString);
+
+const copyDescription =
+  'Files and folders, by path from the package root, that the build copies verbatim into the published package and adds to its "files" and "exports" (a file as "./<path>", a folder as "./<path>/*"), e.g. ["README.md", "LICENSE"]. Anything the build generates or manages cannot be listed: '
+  + RESERVED_COPY_PATHS.map((path) => `"${path}"`).join(", ")
+  + ', and a node_modules or .git folder at any depth. The build fails on an entry that does not exist.';
+
+/** What `makeLibrarySchema` narrows the `library` block to: the daemons and copyable paths a package actually has. */
+export interface LibrarySchemaInput {
+  readonly daemonNames: ReadonlyArray<string>;
+  readonly copyablePaths: ReadonlyArray<string>;
+}
+
+/**
  * The `library` block — configuration owned by this template, as `cicd` is owned by the pipeline.
  *
  * `daemonNames` pins the rendered JSON Schema to exactly the daemons a package actually has: any order,
- * no duplicates, nothing missing and nothing extra. The decoded type is unchanged, so the same
+ * no duplicates, nothing missing and nothing extra. `copyablePaths` limits `copy` to the package's own files and
+ * folders that the build neither generates nor manages. The decoded type is unchanged, so the same
  * `PackageJson` type describes both forms.
  *
  * Exported so other templates can embed it rather than restate it.
  */
-export function makeLibrarySchema(daemonNames: ReadonlyArray<string>): typeof LibrarySchema {
+export function makeLibrarySchema(input: LibrarySchemaInput): typeof LibrarySchema {
   return Schema.Struct({
     daemons: DaemonDeclarations
       .annotate({ description: daemonsDescription })
       .check(Schema.makeFilter(() => undefined, {
         toJsonSchema: () => ({
-          items: { enum: [...daemonNames] },
+          items: { enum: [...input.daemonNames] },
           uniqueItems: true,
-          minItems: daemonNames.length,
-          maxItems: daemonNames.length,
+          minItems: input.daemonNames.length,
+          maxItems: input.daemonNames.length,
+        }),
+      })),
+    copy: CopyDeclarations
+      .annotate({ description: copyDescription })
+      .check(Schema.makeFilter(() => undefined, {
+        toJsonSchema: () => ({
+          items: { enum: [...input.copyablePaths] },
+          uniqueItems: true,
         }),
       })),
     provisionWithJive: ProvisionWithJiveSchema,
@@ -213,6 +241,7 @@ export function makeLibrarySchema(daemonNames: ReadonlyArray<string>): typeof Li
 
 export const LibrarySchema = Schema.Struct({
   daemons: DaemonDeclarations.annotate({ description: daemonsDescription }),
+  copy: CopyDeclarations.annotate({ description: copyDescription }),
   provisionWithJive: ProvisionWithJiveSchema,
 });
 export type LibraryConfig = Schema.Schema.Type<typeof LibrarySchema>;
@@ -278,13 +307,14 @@ export function makeJivePackageJsonSchema<const AbstractFields extends Schema.St
 }
 
 /**
- * This template's package.json schema, narrowed to the daemons a package actually ships.
+ * This template's package.json schema, narrowed to the daemons a package actually ships and the paths it may copy.
  *
  * This is the function a template's `genPackageJsonSchema` hook ultimately returns: given the daemon
- * entrypoints found on disk, it yields the schema that makes declaring them mandatory.
+ * entrypoints and files found on disk, it yields the schema that makes declaring the daemons mandatory and offers
+ * only copyable paths.
  */
-export function makePackageJsonSchema(daemonNames: ReadonlyArray<string>): typeof PackageJsonSchema {
-  return Schema.Struct(packageJsonFields(makeLibrarySchema(daemonNames))) as unknown as typeof PackageJsonSchema;
+export function makePackageJsonSchema(input: LibrarySchemaInput): typeof PackageJsonSchema {
+  return Schema.Struct(packageJsonFields(makeLibrarySchema(input))) as unknown as typeof PackageJsonSchema;
 }
 
 export const PackageJsonSchema = Schema.Struct(packageJsonFields(LibrarySchema));

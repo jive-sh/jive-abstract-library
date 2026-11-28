@@ -3,11 +3,12 @@ import { effunct, type EffectGen } from "effective-modules";
 import { resolve } from "node:path";
 import { layerLive } from "../common/layer";
 import { stderrLogger } from "../common/logger";
-import { PACKAGE_SCHEMA_FILE } from "../common/constants";
+import { PACKAGE_JSON_FILE, PACKAGE_SCHEMA_FILE, SOURCE_DIR } from "../common/constants";
 import type { LibraryModules } from "../modules";
 import { libraryModules } from "../modules";
 import { discoverDaemonNames, packageRootDir } from "./daemons";
-import { makePackageJsonSchema } from "./manifest";
+import { listCopyablePaths } from "./copy";
+import { makeLibrarySchema, makePackageJsonSchema, type LibrarySchema, type LibrarySchemaInput } from "./manifest";
 
 /**
  * The dev server: the long-lived half of a Jive template, running for as long as someone is working on a
@@ -44,18 +45,43 @@ export interface DevServerConfig {
   readonly watchPaths?: ReadonlyArray<string>;
 }
 
-const DEFAULT_WATCH_PATHS = ["src", "package.json"] as const;
+const DEFAULT_WATCH_PATHS = [SOURCE_DIR, PACKAGE_JSON_FILE] as const;
 const DEBOUNCE = "250 millis";
+
+/** Where an abstract's generator reads the `library` block's narrowing from. */
+export interface DiscoverLibrarySchemaInput {
+  readonly rootDir: string;
+  /** Paths the extending abstract's own build writes into the published package, which `copy` may not name. */
+  readonly extraReservedPaths: ReadonlyArray<string>;
+}
+
+function discoverLibrarySchemaInput(input: DiscoverLibrarySchemaInput): Effect.Effect<LibrarySchemaInput, string, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    return {
+      daemonNames: yield* discoverDaemonNames(input.rootDir),
+      copyablePaths: yield* listCopyablePaths(input),
+    };
+  });
+}
+
+/**
+ * The `library` block narrowed to a package's files, for an abstract that embeds it beside its own block: the daemons
+ * in `src/daemons/`, and the paths `copy` may name once the extending abstract's own outputs are reserved too.
+ */
+export function discoverLibrarySchema(input: DiscoverLibrarySchemaInput): Effect.Effect<typeof LibrarySchema, string, FileSystem.FileSystem> {
+  return Effect.map(discoverLibrarySchemaInput(input), makeLibrarySchema);
+}
 
 /**
  * This template's own generator: a package built by `jive-abstract-library` must list every daemon in
- * `src/daemons/` and nothing else. That a daemon exists is readable from the files, but listing it cannot
- * be skipped — a file dropped in that directory would otherwise acquire a start-at-login registration on
- * every user's machine without the manifest ever saying so — so the editor is what asks for it.
+ * `src/daemons/` and nothing else, and may copy only its own files the build neither generates nor manages. That a
+ * daemon exists is readable from the files, but listing it cannot be skipped — a file dropped in that directory would
+ * otherwise acquire a start-at-login registration on every user's machine without the manifest ever saying so — so
+ * the editor is what asks for it.
  */
 export const genPackageJsonSchema: PackageJsonSchemaGenerator = Effect.gen(function* () {
   const rootDir = yield* packageRootDir;
-  return makePackageJsonSchema(yield* discoverDaemonNames(rootDir));
+  return makePackageJsonSchema(yield* discoverLibrarySchemaInput({ rootDir, extraReservedPaths: [] }));
 });
 
 /** Runs a template's dev server until it is interrupted. Never returns normally. */

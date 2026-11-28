@@ -20,7 +20,7 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",
-    "jive-abstract-library": "0.14.5",
+    "jive-abstract-library": "0.16.0",
     "typescript": "^5.9.3"
   },
   "jive": {
@@ -43,6 +43,9 @@
     },
     "library": {
       "daemons": [],
+      "copy": [
+        "README.md"
+      ],
       "provisionWithJive": null
     }
   }

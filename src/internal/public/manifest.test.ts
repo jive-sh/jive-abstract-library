@@ -7,10 +7,14 @@ import { join } from "node:path";
 import { discoverDaemonNames } from "./daemons";
 import { makePackageJsonSchema, PackageJsonSchema } from "./manifest";
 
-function daemonsNode(daemonNames: ReadonlyArray<string>): Record<string, any> {
-  const schema = makePackageJsonSchema(daemonNames);
+function libraryNode(input: { daemonNames: ReadonlyArray<string>; copyablePaths: ReadonlyArray<string> }): Record<string, any> {
+  const schema = makePackageJsonSchema(input);
   const document = JsonSchema.toDocumentDraft07(Schema.toJsonSchemaDocument(schema));
-  return (document.schema as any).properties.jive.properties.library.properties.daemons;
+  return (document.schema as any).properties.jive.properties.library;
+}
+
+function daemonsNode(daemonNames: ReadonlyArray<string>): Record<string, any> {
+  return libraryNode({ daemonNames, copyablePaths: [] })["properties"].daemons;
 }
 
 test("the generated schema pins the list to exactly the daemons that exist", () => {
@@ -20,6 +24,15 @@ test("the generated schema pins the list to exactly the daemons that exist", () 
   // Bounded on both sides, so neither a missing nor a repeated name passes; order is left free.
   expect(constraint.minItems).toBe(2);
   expect(constraint.maxItems).toBe(2);
+});
+
+test("the generated schema offers exactly the copyable paths for copy, each once, and requires the field", () => {
+  const node = libraryNode({ daemonNames: [], copyablePaths: ["LICENSE", "README.md", "docs", "docs/guide.md"] });
+  const constraint = node["properties"].copy["allOf"][0];
+  expect(constraint.items.enum).toEqual(["LICENSE", "README.md", "docs", "docs/guide.md"]);
+  expect(constraint.uniqueItems).toBe(true);
+  expect(node["required"]).toContain("copy");
+  expect(node["properties"].copy.description).toContain('"package.json", "package.schema.json", "src", "dist"');
 });
 
 test("a package with no daemons gets a schema that accepts only an empty list", () => {
@@ -59,9 +72,10 @@ function manifestWith(library: object) {
 }
 
 test("pinning the schema does not narrow what it decodes", () => {
-  const manifest = manifestWith({ daemons: ["unlisted"], provisionWithJive: null });
-  for (const schema of [PackageJsonSchema, makePackageJsonSchema(["alpha"])]) {
+  const manifest = manifestWith({ daemons: ["unlisted"], copy: ["not-on-disk.md"], provisionWithJive: null });
+  for (const schema of [PackageJsonSchema, makePackageJsonSchema({ daemonNames: ["alpha"], copyablePaths: ["README.md"] })]) {
     expect(Schema.decodeUnknownSync(schema)(manifest).jive.library.daemons).toEqual(["unlisted"]);
+    expect(Schema.decodeUnknownSync(schema)(manifest).jive.library.copy).toEqual(["not-on-disk.md"]);
   }
 });
 
@@ -88,10 +102,10 @@ test("a package without src/daemons has no daemons rather than failing", async (
 
 describe("provisionWithJive", () => {
   const decode = (provisionWithJive: unknown) =>
-    Schema.decodeUnknownResult(PackageJsonSchema)(manifestWith({ daemons: [], provisionWithJive }));
+    Schema.decodeUnknownResult(PackageJsonSchema)(manifestWith({ daemons: [], copy: [], provisionWithJive }));
 
   test("null decodes to none and encodes back to null", () => {
-    const decoded = Schema.decodeUnknownSync(PackageJsonSchema)(manifestWith({ daemons: [], provisionWithJive: null }));
+    const decoded = Schema.decodeUnknownSync(PackageJsonSchema)(manifestWith({ daemons: [], copy: [], provisionWithJive: null }));
     expect(decoded.jive.library.provisionWithJive).toEqual(Option.none());
     expect((Schema.encodeSync(PackageJsonSchema)(decoded) as any).jive.library.provisionWithJive).toBeNull();
   });
@@ -110,7 +124,7 @@ describe("provisionWithJive", () => {
   });
 
   test("the generated schema describes it, so an author can discover it", () => {
-    const document = JsonSchema.toDocumentDraft07(Schema.toJsonSchemaDocument(makePackageJsonSchema([])));
+    const document = JsonSchema.toDocumentDraft07(Schema.toJsonSchemaDocument(makePackageJsonSchema({ daemonNames: [], copyablePaths: [] })));
     const node = (document.schema as any).properties.jive.properties.library;
     expect(node.required).toContain("provisionWithJive");
     expect(JSON.stringify(node.properties.provisionWithJive)).toContain("packages.provision");
